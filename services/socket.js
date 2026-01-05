@@ -3,6 +3,7 @@ const redisService = require("./redis");
 const { User, RideRequest, PricingSetting, SystemSetting, DriverDebtLedger } = require("../models");
 const sequelize = require("../config/db");
 const notifications = require("./notifications") || require("../services/notifications");
+const { Op } = require("sequelize");
 
 let ioInstance = null;
 
@@ -39,7 +40,6 @@ const init = async (io) => {
         try { await redisClient.sAdd("drivers:online", String(user.id)); } catch (e) {}
       }
 
-      //  معالجة فصل الاتصال
       socket.on("disconnect", async () => {
           try {
             await redisClient.del(socketKey);
@@ -60,7 +60,6 @@ const init = async (io) => {
         try { await redisClient.sAdd("drivers:online", String(user.id)); } catch (e) {}
       });
 
-      // فصل اتصال السائق
       socket.on("driver:offline", async () => {
         await redisClient.del(`driver:state:${user.id}`);
         try { await redisClient.sRem("drivers:online", String(user.id)); } catch (e) {}
@@ -71,7 +70,7 @@ const init = async (io) => {
         try {
           const now = Date.now();
           const last = socket.data?.lastLocTs || 0;
-          if (now - last < 1000) return; // rate limit: 1s
+          if (now - last < 1000) return;
           socket.data = socket.data || {};
           socket.data.lastLocTs = now;
 
@@ -278,16 +277,46 @@ const init = async (io) => {
 
       //  إنشاء طلب الرحلة من قبل الراكب
       socket.on("rider:create_request", async (data, ack) => {
+        const t = await sequelize.transaction();
         try {
           const { pickup, dropoff, distanceKm, durationMin } = data;
-          if (!pickup || !dropoff) return ack && ack({ error: "invalid_payload" });
+          if (!pickup || !dropoff) {
+            await t.rollback();
+            return ack && ack({ error: "invalid_payload" });
+          }
 
-          // compute estimated fare if distance provided
+          // ✅ 1) امنع إنشاء طلب جديد إذا عنده طلب فعال (داخل transaction + lock)
+          const active = await RideRequest.findOne({
+            where: {
+              rider_id: user.id,
+              status: { [Op.in]: ["pending", "accepted", "arrived", "started"] },
+            },
+            order: [["createdAt", "DESC"]],
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          });
+
+          if (active) {
+            await t.rollback();
+            return ack && ack({
+              error: "active_ride_exists",
+              message: "عندك رحلة/طلب فعال مسبقاً",
+              activeRequestId: active.id,
+              status: active.status,
+            });
+          }
+
+          // ✅ 2) حساب التسعيرة (تقدر تخليه داخل نفس transaction أو برا)
           let estimatedFare = null;
-          let dKm = distanceKm != null ? parseFloat(distanceKm) : null;
-          let dur = durationMin != null ? parseFloat(durationMin) : null;
+          const dKm = distanceKm != null ? parseFloat(distanceKm) : null;
+          const dur = durationMin != null ? parseFloat(durationMin) : null;
+
           try {
-            const pricing = await PricingSetting.findOne({ order: [["createdAt", "DESC"]] });
+            const pricing = await PricingSetting.findOne({
+              order: [["createdAt", "DESC"]],
+              transaction: t,
+            });
+
             if (pricing && dKm != null) {
               const base = parseFloat(pricing.baseFare || 0);
               const perKm = parseFloat(pricing.pricePerKm || 0);
@@ -297,8 +326,11 @@ const init = async (io) => {
               if (minimum != null) fare = Math.max(minimum, fare);
               estimatedFare = fare.toFixed(2);
             }
-          } catch (e) { }
+          } catch (e) {
+            // إذا فشل التسعير ما نوقف الطلب، نخلي estimatedFare = null
+          }
 
+          // ✅ 3) إنشاء الطلب
           const newReq = await RideRequest.create({
             rider_id: user.id,
             pickupLat: pickup.lat,
@@ -309,12 +341,16 @@ const init = async (io) => {
             dropoffAddress: dropoff.address || null,
             distanceKm: dKm,
             durationMin: dur,
-            estimatedFare: estimatedFare,
+            estimatedFare,
             status: "pending",
-          });
+          }, { transaction: t });
 
-          // match nearby drivers
-          const nearby = await redisClient.sendCommand(["GEORADIUS", "drivers:geo", String(pickup.lng), String(pickup.lat), "5000", "m", "COUNT", "30", "ASC"]).catch(() => []);
+          await t.commit();
+
+          // ✅ 4) بعد commit سوّي matching للسائقين (برا transaction)
+          const nearby = await redisClient
+            .sendCommand(["GEORADIUS", "drivers:geo", String(pickup.lng), String(pickup.lat), "5000", "m", "COUNT", "30", "ASC"])
+            .catch(() => []);
 
           const driverIds = (nearby || []).map(String).slice(0, 30);
 
@@ -325,10 +361,12 @@ const init = async (io) => {
             }
           }
 
-          ack && ack({ success: true, request: newReq });
+          return ack && ack({ success: true, request: newReq });
+
         } catch (e) {
+          try { await t.rollback(); } catch (_) {}
           console.error("rider:create_request", e.message);
-          ack && ack({ error: e.message });
+          return ack && ack({ error: e.message });
         }
       });
 
