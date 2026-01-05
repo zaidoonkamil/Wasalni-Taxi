@@ -61,6 +61,30 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
   }
 });
 
+// GET /ride-requests/active
+router.get("/ride-requests/active", authenticateToken, async (req, res) => {
+  try {
+    const active = await RideRequest.findOne({
+      where: {
+        rider_id: req.user.id,
+        status: ["pending", "accepted", "arrived", "started"],
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    if (!active) {
+      return res.json({ hasActive: false });
+    }
+
+    return res.json({
+      hasActive: true,
+      request: active,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // الحصول على تفاصيل طلب رحلة
 router.get("/ride-requests/:id", authenticateToken, async (req, res) => {
   try {
