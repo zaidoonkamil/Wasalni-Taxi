@@ -90,6 +90,8 @@ const init = async (io) => {
       socket.on("driver:offline", async () => {
         await redisClient.del(`driver:state:${user.id}`);
         try { await redisClient.sRem("drivers:online", String(user.id)); } catch (e) {}
+        try { await redisClient.sendCommand(["ZREM", "drivers:geo", String(user.id)]); } catch (e) {}
+        try { await redisClient.del(`driver:loc:${user.id}`); } catch (e) {}
       });
 
       // تحديث موقع السائق
@@ -453,16 +455,20 @@ const init = async (io) => {
           let sentCount = 0;
 
           for (const did of driverIds) {
-              const rejectedKey = `request:rejected:${newReq.id}`;
-              const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
-              if (isRejected) continue;
+            // 1) لازم يكون اونلاين
+            const isOnline = await redisClient.sIsMember("drivers:online", String(did));
+            if (!isOnline) continue;
+
+            // 2) إذا رافض الطلب لا تبعث له
+            const rejectedKey = `request:rejected:${newReq.id}`;
+            const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
+            if (isRejected) continue;
+
+            // 3) لازم عنده سوكت
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
             if (driverSocketId && ioInstance) {
               ioInstance.to(driverSocketId).emit("request:new", { request: newReq });
               sentCount++;
-              console.log("✅ emitted request:new to driver", did);
-            } else {
-              console.log("❌ no socketId for driver", did);
             }
           }
 
