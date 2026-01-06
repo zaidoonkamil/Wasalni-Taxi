@@ -32,14 +32,19 @@ const init = async (io) => {
 
       const isDriver = user.role === "driver";
       const socketKey = isDriver ? `socket:driver:${user.id}` : `socket:rider:${user.id}`;
-      await redisClient.set(socketKey, socket.id, { EX: 120 });
-
-      if (isDriver) {
-        await redisClient.set(`driver:state:${user.id}`, "online", { EX: 90 });
-        // maintain lightweight set of online drivers (IDs only)
-        try { await redisClient.sAdd("drivers:online", String(user.id)); } catch (e) {}
-      }
-
+      await redisClient.set(socketKey, socket.id, { EX: 3600  });
+        const refreshSocketKey = async () => {
+          try {
+            await redisClient.set(socketKey, socket.id, { EX: 3600 });
+          } catch (e) {
+            console.error("refreshSocketKey error", e.message);
+          }
+        };
+        
+        socket.onAny(async () => {
+          await refreshSocketKey();
+        });
+        
       socket.on("disconnect", async () => {
           try {
             await redisClient.del(socketKey);
@@ -56,8 +61,14 @@ const init = async (io) => {
 
       // اتصال السائق
       socket.on("driver:online", async () => {
-        await redisClient.set(`driver:state:${user.id}`, "online", { EX: 90 });
-        try { await redisClient.sAdd("drivers:online", String(user.id)); } catch (e) {}
+        try {
+          await redisClient.set(`driver:state:${user.id}`, "online", { EX: 3600 });
+          await redisClient.sAdd("drivers:online", String(user.id));
+          await redisClient.set(socketKey, socket.id, { EX: 3600 });
+          console.log("🟢 driver online:", user.id);
+        } catch (e) {
+          console.error("driver:online error", e.message);
+        }
       });
 
       socket.on("driver:offline", async () => {
@@ -86,7 +97,7 @@ const init = async (io) => {
 
 
           const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
-          await redisService.setJSON(`driver:loc:${user.id}`, locObj, 90);
+          await redisService.setJSON(`driver:loc:${user.id}`, locObj, 3600);
 
           await redisClient.sendCommand([
             "GEOADD",
@@ -400,7 +411,7 @@ const init = async (io) => {
           console.log("✅ created request id=", newReq.id, "fare=", newReq.estimatedFare);
 
           // 4) matching بعد commit
-          const radiusM = 115000; // جرب 15000 مؤقتاً إذا تحس المشكلة بالمسافة
+          const radiusM = 5000; // جرب 15000 مؤقتاً إذا تحس المشكلة بالمسافة
           const nearby = await redisClient
             .sendCommand([
               "GEORADIUS",
