@@ -66,41 +66,44 @@ const init = async (io) => {
       });
 
       // تحديث موقع السائق
-      socket.on("driver:location", async (data) => {
+      socket.on("driver:location", async (data, ack) => {
         try {
           const now = Date.now();
           const last = socket.data?.lastLocTs || 0;
-          if (now - last < 1000) return;
+
+          if (now - last < 1000) {
+            return ack && ack({ ok: true, throttled: true });
+          }
+
           socket.data = socket.data || {};
           socket.data.lastLocTs = now;
 
           const { lat, lng, heading } = data;
-            if (lat == null || lng == null) {
-              return ack && ack({ ok: false, reason: "missing_lat_lng" });
-            }
+
+          if (lat == null || lng == null) {
+            return ack && ack({ ok: false, reason: "missing_lat_lng" });
+          }
+
+          console.log("📍 driver:location recv", user.id, lat, lng);
 
           const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
           await redisService.setJSON(`driver:loc:${user.id}`, locObj, 90);
-          // update geo set (lon, lat)
-          try {
-            await redisClient.sendCommand(["GEOADD", "drivers:geo", String(lng), String(lat), String(user.id)]);
-          } catch (e) {
-            // ignore geo errors
-          }
 
-          // broadcast driver's location for any active trip
-          // find active ride where this driver is assigned
-          const activeRide = await RideRequest.findOne({ where: { driver_id: user.id, status: ["accepted", "arrived", "started"] } });
-          if (activeRide && ioInstance) {
-            const payload = { rideId: activeRide.id, lat, lng, heading };
-            // send to rider
-            const riderSocketId = await redisClient.get(`socket:rider:${activeRide.rider_id}`);
-            if (riderSocketId) ioInstance.to(riderSocketId).emit("trip:driver_location", payload);
-          }
+          await redisClient.sendCommand([
+            "GEOADD",
+            "drivers:geo",
+            String(lng),
+            String(lat),
+            String(user.id),
+          ]);
+
+          return ack && ack({ ok: true });
         } catch (e) {
           console.error("driver:location error", e.message);
+          return ack && ack({ ok: false, reason: e.message });
         }
       });
+
 
       // قبول طلب الرحلة من قبل السائق
       socket.on("driver:accept_request", async ({ requestId }) => {
