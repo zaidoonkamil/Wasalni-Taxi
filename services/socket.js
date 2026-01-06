@@ -322,12 +322,14 @@ const init = async (io) => {
               const perKm = parseFloat(pricing.pricePerKm || 0);
               const perMin = pricing.pricePerMinute ? parseFloat(pricing.pricePerMinute) : 0;
               const minimum = pricing.minimumFare != null ? parseFloat(pricing.minimumFare) : null;
+
               let fare = base + dKm * perKm + (dur != null ? dur * perMin : 0);
               if (minimum != null) fare = Math.max(minimum, fare);
+
               estimatedFare = fare.toFixed(2);
             }
           } catch (e) {
-            // إذا فشل التسعير ما نوقف الطلب، نخلي estimatedFare = null
+            console.error("pricing calc error:", e.message);
           }
 
           // ✅ 3) إنشاء الطلب
@@ -341,7 +343,7 @@ const init = async (io) => {
             dropoffAddress: dropoff.address || null,
             distanceKm: dKm,
             durationMin: dur,
-            estimatedFare,
+            estimatedFare: estimatedFare,
             status: "pending",
           }, { transaction: t });
 
