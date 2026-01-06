@@ -84,7 +84,6 @@ const init = async (io) => {
             return ack && ack({ ok: false, reason: "missing_lat_lng" });
           }
 
-          console.log("📍 driver:location recv", user.id, lat, lng);
 
           const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
           await redisService.setJSON(`driver:loc:${user.id}`, locObj, 90);
@@ -285,11 +284,18 @@ const init = async (io) => {
         const t = await sequelize.transaction();
         try {
           const { pickup, dropoff, distanceKm, durationMin } = data;
+
           if (!pickup || !dropoff) {
             await t.rollback();
-            return ack && ack({ error: "invalid_payload" });
+            return ack && ack({ ok: false, error: "invalid_payload" });
           }
 
+          console.log("🧾 rider:create_request from riderId=", user.id);
+          console.log("🎯 pickup", pickup.lat, pickup.lng, "addr=", pickup.address);
+          console.log("🏁 dropoff", dropoff.lat, dropoff.lng, "addr=", dropoff.address);
+          console.log("📏 distanceKm=", distanceKm, "durationMin=", durationMin);
+
+          // 1) تأكد ماكو رحلة فعالة
           const active = await RideRequest.findOne({
             where: {
               rider_id: user.id,
@@ -302,7 +308,9 @@ const init = async (io) => {
 
           if (active) {
             await t.rollback();
+            console.log("⚠️ active ride exists id=", active.id, "status=", active.status);
             return ack && ack({
+              ok: false,
               error: "active_ride_exists",
               message: "عندك رحلة/طلب فعال مسبقاً",
               activeRequestId: active.id,
@@ -310,6 +318,7 @@ const init = async (io) => {
             });
           }
 
+          // 2) حساب التسعيرة
           let estimatedFare = null;
 
           const dKmRaw = distanceKm != null ? parseFloat(distanceKm) : null;
@@ -319,10 +328,10 @@ const init = async (io) => {
           const dur = Number.isFinite(durRaw) ? durRaw : null;
 
           const DEFAULT_PRICING = {
-            baseFare: 2000,        // أجرة فتح العداد
-            pricePerKm: 500,       // دينار لكل كم
-            pricePerMinute: 0,     // دينار لكل دقيقة
-            minimumFare: 3000,     // أقل أجرة ممكنة
+            baseFare: 2000,
+            pricePerKm: 500,
+            pricePerMinute: 0,
+            minimumFare: 3000,
           };
 
           try {
@@ -331,32 +340,33 @@ const init = async (io) => {
               transaction: t,
             });
 
-            const base = pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
-              ? parseFloat(pricing.baseFare)
-              : DEFAULT_PRICING.baseFare;
+            const base =
+              pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
+                ? parseFloat(pricing.baseFare)
+                : DEFAULT_PRICING.baseFare;
 
-            const perKm = pricing?.pricePerKm != null && Number.isFinite(parseFloat(pricing.pricePerKm))
-              ? parseFloat(pricing.pricePerKm)
-              : DEFAULT_PRICING.pricePerKm;
+            const perKm =
+              pricing?.pricePerKm != null && Number.isFinite(parseFloat(pricing.pricePerKm))
+                ? parseFloat(pricing.pricePerKm)
+                : DEFAULT_PRICING.pricePerKm;
 
-            const perMin = pricing?.pricePerMinute != null && Number.isFinite(parseFloat(pricing.pricePerMinute))
-              ? parseFloat(pricing.pricePerMinute)
-              : DEFAULT_PRICING.pricePerMinute;
+            const perMin =
+              pricing?.pricePerMinute != null && Number.isFinite(parseFloat(pricing.pricePerMinute))
+                ? parseFloat(pricing.pricePerMinute)
+                : DEFAULT_PRICING.pricePerMinute;
 
-            const minimum = pricing?.minimumFare != null && Number.isFinite(parseFloat(pricing.minimumFare))
-              ? parseFloat(pricing.minimumFare)
-              : DEFAULT_PRICING.minimumFare;
+            const minimum =
+              pricing?.minimumFare != null && Number.isFinite(parseFloat(pricing.minimumFare))
+                ? parseFloat(pricing.minimumFare)
+                : DEFAULT_PRICING.minimumFare;
 
             if (dKm != null) {
               let fare = base + dKm * perKm + (dur != null ? dur * perMin : 0);
               fare = Math.max(minimum, fare);
-
               estimatedFare = String(Math.round(fare));
             }
           } catch (e) {
             console.error("pricing calc error:", e.message);
-
-            // fallback افتراضي حتى لو صار error
             if (dKm != null) {
               let fare =
                 DEFAULT_PRICING.baseFare +
@@ -364,49 +374,87 @@ const init = async (io) => {
                 (dur != null ? dur * DEFAULT_PRICING.pricePerMinute : 0);
 
               fare = Math.max(DEFAULT_PRICING.minimumFare, fare);
-              estimatedFare = fare.toFixed(2);
+              estimatedFare = String(Math.round(fare));
             }
           }
 
-          // ✅ 3) إنشاء الطلب
-          const newReq = await RideRequest.create({
-            rider_id: user.id,
-            pickupLat: pickup.lat,
-            pickupLng: pickup.lng,
-            pickupAddress: pickup.address || null,
-            dropoffLat: dropoff.lat,
-            dropoffLng: dropoff.lng,
-            dropoffAddress: dropoff.address || null,
-            distanceKm: dKm,
-            durationMin: dur,
-            estimatedFare: estimatedFare, // ✅ ما راح تبقى null إذا dKm موجود
-            status: "pending",
-          }, { transaction: t });
+          // 3) إنشاء الطلب داخل transaction
+          const newReq = await RideRequest.create(
+            {
+              rider_id: user.id,
+              pickupLat: pickup.lat,
+              pickupLng: pickup.lng,
+              pickupAddress: pickup.address || null,
+              dropoffLat: dropoff.lat,
+              dropoffLng: dropoff.lng,
+              dropoffAddress: dropoff.address || null,
+              distanceKm: dKm,
+              durationMin: dur,
+              estimatedFare,
+              status: "pending",
+            },
+            { transaction: t }
+          );
 
           await t.commit();
+          console.log("✅ created request id=", newReq.id, "fare=", newReq.estimatedFare);
 
-          // ✅ 4) بعد commit سوّي matching للسائقين
+          // 4) matching بعد commit
+          const radiusM = 115000; // جرب 15000 مؤقتاً إذا تحس المشكلة بالمسافة
           const nearby = await redisClient
-            .sendCommand(["GEORADIUS", "drivers:geo", String(pickup.lng), String(pickup.lat), "5000", "m", "COUNT", "30", "ASC"])
-            .catch(() => []);
+            .sendCommand([
+              "GEORADIUS",
+              "drivers:geo",
+              String(pickup.lng),
+              String(pickup.lat),
+              String(radiusM),
+              "m",
+              "COUNT",
+              "30",
+              "ASC",
+            ])
+            .catch((e) => {
+              console.error("❌ GEORADIUS error", e.message);
+              return [];
+            });
+
+          console.log("👀 nearby raw:", nearby);
 
           const driverIds = (nearby || []).map(String).slice(0, 30);
+          console.log("✅ driverIds:", driverIds);
+
+          let sentCount = 0;
 
           for (const did of driverIds) {
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
+            console.log("📡 did=", did, "sid=", driverSocketId);
+
             if (driverSocketId && ioInstance) {
               ioInstance.to(driverSocketId).emit("request:new", { request: newReq });
+              sentCount++;
+              console.log("✅ emitted request:new to driver", did);
+            } else {
+              console.log("❌ no socketId for driver", did);
             }
           }
 
-          return ack && ack({ success: true, request: newReq });
+          console.log("📤 done matching. sentCount=", sentCount);
 
+          return ack && ack({
+            ok: true,
+            success: true,
+            request: newReq,
+            debug: { radiusM, driverIds, sentCount },
+          });
         } catch (e) {
-          try { await t.rollback(); } catch (_) {}
-          console.error("rider:create_request", e.message);
-          return ack && ack({ error: e.message });
+          try {
+            await t.rollback();
+          } catch (_) {}
+          console.error("❌ rider:create_request", e.message);
+          return ack && ack({ ok: false, error: e.message });
         }
       });
+
 
       // إلغاء طلب الرحلة من قبل الراكب
       socket.on("rider:cancel_request", async ({ requestId }) => {
