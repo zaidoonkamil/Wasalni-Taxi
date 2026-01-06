@@ -75,7 +75,9 @@ const init = async (io) => {
           socket.data.lastLocTs = now;
 
           const { lat, lng, heading } = data;
-          if (!lat || !lng) return;
+            if (lat == null || lng == null) {
+              return ack && ack({ ok: false, reason: "missing_lat_lng" });
+            }
 
           const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
           await redisService.setJSON(`driver:loc:${user.id}`, locObj, 90);
@@ -305,7 +307,6 @@ const init = async (io) => {
             });
           }
 
-          // ✅ 2) حساب التسعيرة (مع تسعيرة افتراضية)
           let estimatedFare = null;
 
           const dKmRaw = distanceKm != null ? parseFloat(distanceKm) : null;
@@ -327,7 +328,6 @@ const init = async (io) => {
               transaction: t,
             });
 
-            // اقرأ من DB وإذا القيمة مو صالحة خذ الافتراضي
             const base = pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
               ? parseFloat(pricing.baseFare)
               : DEFAULT_PRICING.baseFare;
