@@ -285,7 +285,6 @@ const init = async (io) => {
             return ack && ack({ error: "invalid_payload" });
           }
 
-          // ✅ 1) امنع إنشاء طلب جديد إذا عنده طلب فعال (داخل transaction + lock)
           const active = await RideRequest.findOne({
             where: {
               rider_id: user.id,
@@ -306,10 +305,21 @@ const init = async (io) => {
             });
           }
 
-          // ✅ 2) حساب التسعيرة (تقدر تخليه داخل نفس transaction أو برا)
+          // ✅ 2) حساب التسعيرة (مع تسعيرة افتراضية)
           let estimatedFare = null;
-          const dKm = distanceKm != null ? parseFloat(distanceKm) : null;
-          const dur = durationMin != null ? parseFloat(durationMin) : null;
+
+          const dKmRaw = distanceKm != null ? parseFloat(distanceKm) : null;
+          const durRaw = durationMin != null ? parseFloat(durationMin) : null;
+
+          const dKm = Number.isFinite(dKmRaw) ? dKmRaw : null;
+          const dur = Number.isFinite(durRaw) ? durRaw : null;
+
+          const DEFAULT_PRICING = {
+            baseFare: 2000,        // أجرة فتح العداد
+            pricePerKm: 500,       // دينار لكل كم
+            pricePerMinute: 0,     // دينار لكل دقيقة
+            minimumFare: 3000,     // أقل أجرة ممكنة
+          };
 
           try {
             const pricing = await PricingSetting.findOne({
@@ -317,19 +327,42 @@ const init = async (io) => {
               transaction: t,
             });
 
-            if (pricing && dKm != null) {
-              const base = parseFloat(pricing.baseFare || 0);
-              const perKm = parseFloat(pricing.pricePerKm || 0);
-              const perMin = pricing.pricePerMinute ? parseFloat(pricing.pricePerMinute) : 0;
-              const minimum = pricing.minimumFare != null ? parseFloat(pricing.minimumFare) : null;
+            // اقرأ من DB وإذا القيمة مو صالحة خذ الافتراضي
+            const base = pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
+              ? parseFloat(pricing.baseFare)
+              : DEFAULT_PRICING.baseFare;
 
+            const perKm = pricing?.pricePerKm != null && Number.isFinite(parseFloat(pricing.pricePerKm))
+              ? parseFloat(pricing.pricePerKm)
+              : DEFAULT_PRICING.pricePerKm;
+
+            const perMin = pricing?.pricePerMinute != null && Number.isFinite(parseFloat(pricing.pricePerMinute))
+              ? parseFloat(pricing.pricePerMinute)
+              : DEFAULT_PRICING.pricePerMinute;
+
+            const minimum = pricing?.minimumFare != null && Number.isFinite(parseFloat(pricing.minimumFare))
+              ? parseFloat(pricing.minimumFare)
+              : DEFAULT_PRICING.minimumFare;
+
+            if (dKm != null) {
               let fare = base + dKm * perKm + (dur != null ? dur * perMin : 0);
-              if (minimum != null) fare = Math.max(minimum, fare);
+              fare = Math.max(minimum, fare);
 
-              estimatedFare = fare.toFixed(2);
+              estimatedFare = String(Math.round(fare));
             }
           } catch (e) {
             console.error("pricing calc error:", e.message);
+
+            // fallback افتراضي حتى لو صار error
+            if (dKm != null) {
+              let fare =
+                DEFAULT_PRICING.baseFare +
+                dKm * DEFAULT_PRICING.pricePerKm +
+                (dur != null ? dur * DEFAULT_PRICING.pricePerMinute : 0);
+
+              fare = Math.max(DEFAULT_PRICING.minimumFare, fare);
+              estimatedFare = fare.toFixed(2);
+            }
           }
 
           // ✅ 3) إنشاء الطلب
@@ -343,13 +376,13 @@ const init = async (io) => {
             dropoffAddress: dropoff.address || null,
             distanceKm: dKm,
             durationMin: dur,
-            estimatedFare: estimatedFare,
+            estimatedFare: estimatedFare, // ✅ ما راح تبقى null إذا dKm موجود
             status: "pending",
           }, { transaction: t });
 
           await t.commit();
 
-          // ✅ 4) بعد commit سوّي matching للسائقين (برا transaction)
+          // ✅ 4) بعد commit سوّي matching للسائقين
           const nearby = await redisClient
             .sendCommand(["GEORADIUS", "drivers:geo", String(pickup.lng), String(pickup.lat), "5000", "m", "COUNT", "30", "ASC"])
             .catch(() => []);
