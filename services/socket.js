@@ -45,6 +45,22 @@ const init = async (io) => {
           await refreshSocketKey();
         });
         
+        // رفض الطلب من قبل السائق
+      socket.on("driver:reject_request", async ({ requestId }) => {
+        try {
+          if (!requestId) return;
+
+          const key = `request:rejected:${requestId}`;
+          await redisClient.sAdd(key, String(user.id));
+          await redisClient.expire(key, 3600);
+
+          socket.emit("request:rejected_ack", { ok: true, requestId });
+        } catch (e) {
+          console.error("driver:reject_request error", e.message);
+          socket.emit("request:rejected_ack", { ok: false, error: e.message });
+        }
+      });
+
       socket.on("disconnect", async () => {
           try {
             await redisClient.del(socketKey);
@@ -437,9 +453,10 @@ const init = async (io) => {
           let sentCount = 0;
 
           for (const did of driverIds) {
+              const rejectedKey = `request:rejected:${newReq.id}`;
+              const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
+              if (isRejected) continue;
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
-            console.log("📡 did=", did, "sid=", driverSocketId);
-
             if (driverSocketId && ioInstance) {
               ioInstance.to(driverSocketId).emit("request:new", { request: newReq });
               sentCount++;
