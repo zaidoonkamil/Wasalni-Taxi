@@ -159,4 +159,38 @@ router.get("/ride-requests/user/:userId", async (req, res) => {
   }
 });
 
+// GET /ride-requests/driver/:driverId
+router.get("/ride-requests/driver/:driverId", async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const {
+      status,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const where = { driver_id: driverId };
+    if (status) where.status = status;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const { rows, count } = await RideRequest.findAndCountAll({
+      where,
+      order: [["createdAt", "DESC"]],
+      limit: parseInt(limit),
+      offset,
+    });
+
+    return res.json({
+      success: true,
+      total: count,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      rides: rows,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
