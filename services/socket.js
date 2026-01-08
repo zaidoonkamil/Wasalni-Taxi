@@ -324,7 +324,6 @@ const init = async (io) => {
           console.log("🏁 dropoff", dropoff.lat, dropoff.lng, "addr=", dropoff.address);
           console.log("📏 distanceKm=", distanceKm, "durationMin=", durationMin);
 
-          // 1) تأكد ماكو رحلة فعالة
           const active = await RideRequest.findOne({
             where: {
               rider_id: user.id,
@@ -427,9 +426,8 @@ const init = async (io) => {
 
           await t.commit();
           console.log("✅ created request id=", newReq.id, "fare=", newReq.estimatedFare);
-
           // 4) matching بعد commit
-          const radiusM = 5000; // جرب 15000 مؤقتاً إذا تحس المشكلة بالمسافة
+          const radiusM = 5000;
           const nearby = await redisClient
             .sendCommand([
               "GEORADIUS",
@@ -447,12 +445,12 @@ const init = async (io) => {
               return [];
             });
 
-          console.log("👀 nearby raw:", nearby);
-
           const driverIds = (nearby || []).map(String).slice(0, 30);
-          console.log("✅ driverIds:", driverIds);
 
           let sentCount = 0;
+
+          // ✅ new: key نخزّن بيه السواق اللي وصلهم الطلب
+          const sentKey = `request:sent_to:${newReq.id}`;
 
           for (const did of driverIds) {
             // 1) لازم يكون اونلاين
@@ -469,8 +467,14 @@ const init = async (io) => {
             if (driverSocketId && ioInstance) {
               ioInstance.to(driverSocketId).emit("request:new", { request: newReq });
               sentCount++;
+
+              // ✅ new: خزّن انه انبعت لهذا السائق
+              await redisClient.sAdd(sentKey, String(did));
             }
           }
+
+          // ✅ new: خلي الـ set ينتهي بعد ساعة
+          await redisClient.expire(sentKey, 3600);
 
           console.log("📤 done matching. sentCount=", sentCount);
 
@@ -480,6 +484,7 @@ const init = async (io) => {
             request: newReq,
             debug: { radiusM, driverIds, sentCount },
           });
+
         } catch (e) {
           try {
             await t.rollback();
@@ -497,11 +502,26 @@ const init = async (io) => {
           if (!req) return;
           req.status = "cancelled";
           await req.save();
-          if (req.driver_id) {
-            const driverSocketId = await redisClient.get(`socket:driver:${req.driver_id}`);
-            if (driverSocketId && ioInstance) ioInstance.to(driverSocketId).emit("trip:status_changed", { requestId: req.id, status: req.status });
+
+          const sentKey = `request:sent_to:${req.id}`;
+          const driverIds = await redisClient.sMembers(sentKey);
+
+          for (const did of driverIds || []) {
+            const sid = await redisClient.get(`socket:driver:${did}`);
+            if (sid && ioInstance) {
+              ioInstance.to(sid).emit("trip:status_changed", {
+                requestId: req.id,
+                status: req.status,
+              });
+            }
           }
-        } catch (e) { console.error(e.message); }
+
+          await redisClient.del(sentKey);
+          await redisClient.del(`request:rejected:${req.id}`);
+
+        } catch (e) {
+          console.error(e.message);
+        }
       });
 
     } catch (e) {
