@@ -240,7 +240,7 @@ router.get("/usersOnly", async (req, res) => {
     const offset = (page - 1) * limit;
 
     const { count, rows: users } = await User.findAndCountAll({
-      where: { role: { [Op.notIn]: ["admin"] } },
+      where: { role: { [Op.notIn]: ["admin","driver"] } },
       limit,
       offset,
       order: [["createdAt", "DESC"]],
