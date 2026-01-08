@@ -129,4 +129,34 @@ router.get("/drivers/nearby", authenticateToken, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /ride-requests/user/:userId
+router.get("/ride-requests/user/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { status, page = 1, limit = 20,} = req.query;
+
+    const where = { rider_id: userId };
+    if (status) where.status = status;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const { rows, count } = await RideRequest.findAndCountAll({
+      where,
+      order: [["createdAt", "DESC"]],
+      limit: parseInt(limit),
+      offset,
+    });
+
+    return res.json({
+      success: true,
+      total: count,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      rides: rows,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
