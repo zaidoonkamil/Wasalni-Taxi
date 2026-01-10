@@ -136,7 +136,6 @@ const init = async (io) => {
       // قبول طلب الرحلة من قبل السائق
       socket.on("driver:accept_request", async ({ requestId }) => {
         try {
-          // Check debt/block status from DB before proceeding
           const driver = await User.findByPk(user.id);
           if (driver && (driver.isDebtBlocked || driver.status === "blocked" || driver.blockReason === "debt")) {
             socket.emit("request:accept_failed", { reason: "debt_blocked" });
@@ -144,6 +143,11 @@ const init = async (io) => {
           }
 
           const lockKey = `order:lock:${requestId}`;
+          const busy = await redisClient.get(`driver:busy:${user.id}`);
+          if (busy) {
+            socket.emit("request:accept_failed", { reason: "driver_busy", activeRequestId: busy });
+            return;
+          }
           const locked = await redisService.setLock(lockKey, String(user.id), 12);
           if (!locked) {
             socket.emit("request:accept_failed", { reason: "already_taken" });
@@ -172,6 +176,7 @@ const init = async (io) => {
             await req.save({ transaction: t });
             await t.commit();
 
+            await redisClient.set(`driver:busy:${user.id}`, String(req.id), { EX: 60 * 60 * 3 });
             // notify rider
             const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
             const payload = { requestId: req.id, driverId: user.id };
@@ -231,7 +236,7 @@ const init = async (io) => {
           // mark completed
           req.status = "completed";
           await req.save();
-
+          await redisClient.del(`driver:busy:${req.driver_id}`);
           // notify rider
           const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
           const payload = { requestId: req.id, status: req.status };
@@ -453,10 +458,12 @@ const init = async (io) => {
           const sentKey = `request:sent_to:${newReq.id}`;
 
           for (const did of driverIds) {
-            // 1) لازم يكون اونلاين
             const isOnline = await redisClient.sIsMember("drivers:online", String(did));
             if (!isOnline) continue;
 
+            const busyRideId = await redisClient.get(`driver:busy:${did}`);
+            if (busyRideId) continue;
+            
             // 2) إذا رافض الطلب لا تبعث له
             const rejectedKey = `request:rejected:${newReq.id}`;
             const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
@@ -502,6 +509,9 @@ const init = async (io) => {
           if (!req) return;
           req.status = "cancelled";
           await req.save();
+          if (req.driver_id) {
+            await redisClient.del(`driver:busy:${req.driver_id}`);
+          }
 
           const sentKey = `request:sent_to:${req.id}`;
           const driverIds = await redisClient.sMembers(sentKey);

@@ -4,6 +4,7 @@ const { authenticateToken } = require("../middlewares/auth");
 const { RideRequest, PricingSetting } = require("../models");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
+const { Op } = require("sequelize");
 
 // إنشاء طلب رحلة جديد (REST)
 router.post("/ride-requests", authenticateToken, async (req, res) => {
@@ -49,8 +50,10 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     const raw = await redisClient.sendCommand(["GEORADIUS", "drivers:geo", String(pickup.lng), String(pickup.lat), String(radiusMeters), "m", "COUNT", "30", "ASC"]).catch(() => []);
     const driverIds = (raw || []).map(String).slice(0, 30);
 
-    // إخطار السائقين عبر المقابس
     for (const did of driverIds) {
+      const busyRideId = await redisClient.get(`driver:busy:${did}`);
+      if (busyRideId) continue;
+
       await socketService.notifyDriverSocket(did, "request:new", { request: newReq }).catch(() => {});
     }
 
@@ -67,19 +70,13 @@ router.get("/ride-requests/active", authenticateToken, async (req, res) => {
     const active = await RideRequest.findOne({
       where: {
         rider_id: req.user.id,
-        status: ["pending", "accepted", "arrived", "started"],
+        status: { [Op.in]: ["pending", "accepted", "arrived", "started"] },
       },
       order: [["createdAt", "DESC"]],
     });
 
-    if (!active) {
-      return res.json({ hasActive: false });
-    }
-
-    return res.json({
-      hasActive: true,
-      request: active,
-    });
+    if (!active) return res.json({ hasActive: false });
+    return res.json({ hasActive: true, request: active });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -104,9 +101,20 @@ router.post("/ride-requests/:id/cancel", authenticateToken, async (req, res) => 
     if (ride.status === "completed" || ride.status === "cancelled") return res.status(400).json({ error: "cannot_cancel" });
     ride.status = "cancelled";
     await ride.save();
-    // notify assigned driver
+    if (ride.driver_id) {
+      await socketService.notifyDriverSocket(
+        ride.driver_id,
+        "trip:status_changed",
+        { requestId: ride.id, status: ride.status }
+      );
+
+      const redisClient = await redisService.init();
+      await redisClient.del(`driver:busy:${ride.driver_id}`);
+    }
     if (ride.driver_id) {
       await socketService.notifyDriverSocket(ride.driver_id, "trip:status_changed", { requestId: ride.id, status: ride.status });
+    const redisClient = await redisService.init();
+    await redisClient.del(`driver:busy:${ride.driver_id}`);
     }
     res.json({ success: true, ride });
   } catch (e) { res.status(500).json({ error: e.message }); }
