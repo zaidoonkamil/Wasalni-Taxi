@@ -5,6 +5,7 @@ const RideEvent = require("./ride_event");
 const PricingSetting = require("./pricing_setting");
 const SystemSetting = require("./system_setting");
 const DriverDebtLedger = require("./driver_debt_ledger");
+const ChatMessage = require("./ChatMessage");
 
 User.hasMany(UserDevice, { foreignKey: "user_id", as: "devices", onDelete: "CASCADE" });
 UserDevice.belongsTo(User, { foreignKey: "user_id", as: "user" });
@@ -21,6 +22,13 @@ RideEvent.belongsTo(RideRequest, { foreignKey: "ride_request_id", as: "ride" });
 User.hasMany(DriverDebtLedger, { foreignKey: "driver_id", as: "debtLedger", onDelete: "CASCADE" });
 DriverDebtLedger.belongsTo(User, { foreignKey: "driver_id", as: "driver" });
 
+ChatMessage.belongsTo(User, { as: "sender", foreignKey: "senderId" , onDelete: 'CASCADE'});
+ChatMessage.belongsTo(User, { as: "receiver", foreignKey: "receiverId" , onDelete: 'CASCADE' });
+
+User.hasMany(ChatMessage, { as: "sentMessages", foreignKey: "senderId" , onDelete: 'CASCADE' });
+User.hasMany(ChatMessage, { as: "receivedMessages", foreignKey: "receiverId" , onDelete: 'CASCADE'});
+
+
 module.exports = {
   User,
   UserDevice,
@@ -29,4 +37,5 @@ module.exports = {
   PricingSetting,
   SystemSetting,
   DriverDebtLedger,
+  ChatMessage,
 };

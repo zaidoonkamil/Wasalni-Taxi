@@ -11,6 +11,7 @@ const adminDebtRouter = require("./routes/adminDebt");
 
 const redisService = require("./services/redis");
 const socketService = require("./services/socket");
+const chat = require("./routes/chatRoutes");
 
 const http = require('http');
 const { Server } = require('socket.io');
@@ -25,6 +26,7 @@ app.use("/", ridesRouter);
 app.use("/", adminRouter);
 app.use("/", adminStatsRouter);
 app.use("/", adminDebtRouter);
+app.use("/", chat.router);
 
 const server = http.createServer(app);
 
@@ -36,7 +38,8 @@ const io = new Server(server, {
   try {
     await redisService.init();
     await socketService.init(io);
-
+    chat.initChatSocket(io);
+ 
     await sequelize.sync({ alter: true });
     console.log("✅ Database & tables synced!");
 
