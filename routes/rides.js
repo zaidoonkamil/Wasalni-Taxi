@@ -64,20 +64,25 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
 });
 
 // GET /ride-requests/active
-router.get("/ride-requests/active", authenticateToken, async (req, res) => {
+router.get("/ride-requests/active", authMiddleware, async (req, res) => {
   try {
-    const active = await RideRequest.findOne({
-      where: {
-        rider_id: req.user.id,
-        status: { [Op.in]: ["pending", "accepted", "arrived", "started"] },
-      },
-      order: [["createdAt", "DESC"]],
+    const user = req.user;
+
+    const activeStatuses = ["pending", "accepted", "arrived", "started"];
+
+    const where =
+      user.role === "driver"
+        ? { driver_id: user.id, status: { [Op.in]: activeStatuses } }
+        : { rider_id: user.id, status: { [Op.in]: activeStatuses } };
+
+    const request = await RideRequest.findOne({
+      where,
+      order: [["updatedAt", "DESC"]],
     });
 
-    if (!active) return res.json({ hasActive: false });
-    return res.json({ hasActive: true, request: active });
+    return res.json({ hasActive: !!request, request });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    return res.status(500).json({ error: e.message });
   }
 });
 
