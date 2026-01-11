@@ -64,7 +64,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
 });
 
 // GET /ride-requests/active
-router.get("/ride-requests/active", authMiddleware, async (req, res) => {
+router.get("/ride-requests/active", authenticateToken, async (req, res) => {
   try {
     const user = req.user;
 
