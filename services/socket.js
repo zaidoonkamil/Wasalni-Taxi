@@ -222,7 +222,7 @@ const init = async (io) => {
           try {
             await notifications.sendNotificationToUser(
               req.rider_id,
-              "السائق وصل ✅",
+              "السائق وصل موقعك",
               "الكابتن وصل لموقعك، تقدر تطلع هسه"
             );
           } catch (e) {
