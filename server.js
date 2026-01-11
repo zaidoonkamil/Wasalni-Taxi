@@ -26,7 +26,7 @@ app.use("/", ridesRouter);
 app.use("/", adminRouter);
 app.use("/", adminStatsRouter);
 app.use("/", adminDebtRouter);
-//app.use("/", chat.router);
+app.use("/", chat.router);
 
 const server = http.createServer(app);
 
