@@ -10,6 +10,8 @@ function initChatSocket(io) {
   const userSockets = new Map();
 
   chatIO.on("connection", (socket) => {
+        console.log("💬 [chat] handshake.query =", socket.handshake.query);
+
     const { userId } = socket.handshake.query;
     if (!userId) return socket.disconnect(true);
 
