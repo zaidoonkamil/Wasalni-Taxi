@@ -206,19 +206,13 @@ const init = async (io) => {
         try {
           const req = await RideRequest.findByPk(requestId);
           if (!req) return;
-
           req.status = "arrived";
           await req.save();
-
           const payload = { requestId: req.id, status: req.status };
-
-          // ✅ Socket للمستخدم (موجود)
           const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
           if (riderSocketId && ioInstance) {
             ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
           }
-
-          // ✅ Push Notification للمستخدم (الجديد)
           try {
             await notifications.sendNotificationToUser(
               req.rider_id,
