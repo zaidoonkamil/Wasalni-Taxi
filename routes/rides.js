@@ -13,7 +13,6 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     const { pickup, dropoff } = req.body;
     if (!pickup || !dropoff) return res.status(400).json({ error: "pickup and dropoff required" });
 
-    // compute fare if distance provided
     let dKm = req.body.distanceKm != null ? parseFloat(req.body.distanceKm) : (pickup.distanceKm || null);
     let dur = req.body.durationMin != null ? parseFloat(req.body.durationMin) : (pickup.durationMin || null);
     let estimatedFare = null;

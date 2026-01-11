@@ -206,13 +206,34 @@ const init = async (io) => {
         try {
           const req = await RideRequest.findByPk(requestId);
           if (!req) return;
+
           req.status = "arrived";
           await req.save();
-          const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
+
           const payload = { requestId: req.id, status: req.status };
-          if (riderSocketId && ioInstance) ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
-        } catch (e) { console.error(e.message); }
+
+          // ✅ Socket للمستخدم (موجود)
+          const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
+          if (riderSocketId && ioInstance) {
+            ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
+          }
+
+          // ✅ Push Notification للمستخدم (الجديد)
+          try {
+            await notifications.sendNotificationToUser(
+              req.rider_id,
+              "السائق وصل ✅",
+              "الكابتن وصل لموقعك، تقدر تطلع هسه"
+            );
+          } catch (e) {
+            console.error("arrived push error:", e.message);
+          }
+
+        } catch (e) {
+          console.error("driver:arrived error:", e.message);
+        }
       });
+
 
       // بدء الرحلة
       socket.on("driver:start_trip", async ({ requestId }) => {
@@ -463,7 +484,7 @@ const init = async (io) => {
 
             const busyRideId = await redisClient.get(`driver:busy:${did}`);
             if (busyRideId) continue;
-            
+
             // 2) إذا رافض الطلب لا تبعث له
             const rejectedKey = `request:rejected:${newReq.id}`;
             const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
