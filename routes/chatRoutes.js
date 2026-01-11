@@ -5,20 +5,18 @@ const { Op } = require("sequelize");
 const { sendNotificationToRole } = require("../services/notifications.js"); 
 const { sendNotificationToUser } = require("../services/notifications.js"); 
 
-function initChatSocket(io) {
-  const chatIO = io.of("/chat");
+function initChatSocket(chatIO) {
   const userSockets = new Map();
 
   chatIO.on("connection", (socket) => {
-        console.log("💬 [chat] handshake.query =", socket.handshake.query);
-
     const { userId } = socket.handshake.query;
     if (!userId) return socket.disconnect(true);
 
     console.log(`💬 [chat] مستخدم متصل: ${userId}`);
 
-    if (!userSockets.has(userId.toString())) userSockets.set(userId.toString(), []);
-    userSockets.get(userId.toString()).push(socket.id);
+    const key = userId.toString();
+    if (!userSockets.has(key)) userSockets.set(key, []);
+    userSockets.get(key).push(socket.id);
 
     socket.on("getMessages", async (payload = {}) => {
       try {
@@ -29,7 +27,7 @@ function initChatSocket(io) {
           const messages = await ChatMessage.findAll({
             where: {
               [Op.or]: [
-                { senderId: userId, receiverId: receiverId },
+                { senderId: userId, receiverId },
                 { senderId: receiverId, receiverId: userId },
               ],
             },
@@ -43,7 +41,7 @@ function initChatSocket(io) {
         }
 
         const admins = await User.findAll({ where: { role: "admin" }, attributes: ["id"] });
-        const adminIds = admins.map(a => a.id);
+        const adminIds = admins.map((a) => a.id);
 
         const messages = await ChatMessage.findAll({
           where: {
@@ -88,7 +86,7 @@ function initChatSocket(io) {
         let recipients = [];
         if (!receiverId) {
           const admins = await User.findAll({ where: { role: "admin" }, attributes: ["id"] });
-          recipients = [...admins.map(a => a.id), senderId];
+          recipients = [...admins.map((a) => a.id), senderId];
 
           await sendNotificationToRole(
             "admin",
@@ -110,7 +108,6 @@ function initChatSocket(io) {
           const sockets = userSockets.get(id.toString()) || [];
           sockets.forEach((sid) => chatIO.to(sid).emit("newMessage", fullMessage));
         });
-
       } catch (err) {
         console.error("❌ خطأ في إرسال الرسالة:", err);
       }
@@ -118,9 +115,8 @@ function initChatSocket(io) {
 
     socket.on("disconnect", () => {
       console.log(`💬 [chat] مستخدم قطع الاتصال: ${userId}`);
-      const key = userId.toString();
       const sockets = userSockets.get(key) || [];
-      userSockets.set(key, sockets.filter(id => id !== socket.id));
+      userSockets.set(key, sockets.filter((id) => id !== socket.id));
     });
   });
 }

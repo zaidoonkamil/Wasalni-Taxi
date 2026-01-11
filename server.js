@@ -38,8 +38,9 @@ const io = new Server(server, {
   try {
     await redisService.init();
     await socketService.init(io);
-    chat.initChatSocket(io);
- 
+    const chatIO = io.of("/chat");
+    chat.initChatSocket(chatIO); 
+    
     await sequelize.sync({ alter: true });
     console.log("✅ Database & tables synced!");
 
