@@ -113,7 +113,6 @@ const init = async (io) => {
             return ack && ack({ ok: false, reason: "missing_lat_lng" });
           }
 
-
           const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
           await redisService.setJSON(`driver:loc:${user.id}`, locObj, 3600);
 
@@ -125,6 +124,27 @@ const init = async (io) => {
             String(user.id),
           ]);
 
+          try {
+            const activeReqId = await redisClient.get(`driver:busy:${user.id}`);
+            if (activeReqId) {
+              const req = await RideRequest.findByPk(activeReqId);
+              if (req && req.rider_id) {
+                const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
+                if (riderSocketId && ioInstance) {
+                  ioInstance.to(riderSocketId).emit("trip:driver_location", {
+                    requestId: req.id,
+                    driverId: user.id,
+                    lat,
+                    lng,
+                    heading: heading || null,
+                    ts: locObj.ts,
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.error("broadcast trip:driver_location error", e.message);
+          }
           return ack && ack({ ok: true });
         } catch (e) {
           console.error("driver:location error", e.message);
