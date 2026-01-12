@@ -23,7 +23,7 @@ app.use(cors({
   methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"],
 }));
-app.options("*", cors()); 
+app.options(/.*/, cors());
 app.use(express.json());
 app.use("/uploads", express.static("./uploads"));
 
