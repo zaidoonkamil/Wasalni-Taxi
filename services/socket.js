@@ -542,10 +542,22 @@ const init = async (io) => {
         try {
           const req = await RideRequest.findByPk(requestId);
           if (!req) return;
+
+          if (["completed", "cancelled"].includes(req.status)) return;
+
           req.status = "cancelled";
           await req.save();
+
           if (req.driver_id) {
             await redisClient.del(`driver:busy:${req.driver_id}`);
+
+            const driverSid = await redisClient.get(`socket:driver:${req.driver_id}`);
+            if (driverSid && ioInstance) {
+              ioInstance.to(driverSid).emit("trip:status_changed", {
+                requestId: req.id,
+                status: "cancelled",
+              });
+            }
           }
 
           const sentKey = `request:sent_to:${req.id}`;
@@ -556,7 +568,7 @@ const init = async (io) => {
             if (sid && ioInstance) {
               ioInstance.to(sid).emit("trip:status_changed", {
                 requestId: req.id,
-                status: req.status,
+                status: "cancelled",
               });
             }
           }
@@ -565,7 +577,7 @@ const init = async (io) => {
           await redisClient.del(`request:rejected:${req.id}`);
 
         } catch (e) {
-          console.error(e.message);
+          console.error("rider:cancel_request error", e.message);
         }
       });
 

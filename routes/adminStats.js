@@ -241,4 +241,45 @@ router.get("/admin/stats/requests/list", requireAdmin, async (req, res) => {
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
 });
 
+// /admin/stats/users/overview
+router.get("/admin/stats/users/overview", requireAdmin, async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const [start, end] = parseRange(from, to);
+
+    const [totalUsers, totalDrivers, pendingDrivers] = await Promise.all([
+      User.count({ where: { role: "user" } }),
+      User.count({ where: { role: "driver" } }),
+      User.count({ where: { role: "driver", status: "pending" } }),
+    ]);
+
+    const statusRows = await User.findAll({
+      attributes: ["status", [fn("COUNT", col("id")), "count"]],
+      where: { createdAt: { [Op.between]: [start, end] } },
+      group: ["status"],
+      raw: true,
+    });
+    const usersByStatus = {};
+    statusRows.forEach(r => usersByStatus[r.status] = parseInt(r.count));
+
+    let devicesTotal = null;
+    let usersWithDevices = null;
+    try {
+      const { UserDevice } = require("../models");
+      devicesTotal = await UserDevice.count();
+      const unique = await UserDevice.count({ distinct: true, col: "userId" });
+      usersWithDevices = unique;
+    } catch (_) {}
+
+    res.json({
+      totalUsers,
+      totalDrivers,
+      pendingDrivers,
+      usersByStatus,
+      devicesTotal,
+      usersWithDevices,
+    });
+  } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
