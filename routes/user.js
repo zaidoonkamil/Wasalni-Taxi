@@ -291,6 +291,35 @@ router.get("/driversOnly", async (req, res) => {
   }
 });
 
+router.get("/adminOnly", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = (page - 1) * limit;
+
+    const { count, rows: drivers } = await User.findAndCountAll({
+      where: { role: "admin" },
+      limit,
+      offset,
+      order: [["createdAt", "DESC"]],
+      attributes: { exclude: ["password"] },
+    });
+
+    return res.status(200).json({
+      drivers,
+      pagination: {
+        totalDrivers: count,
+        currentPage: page,
+        totalPages: Math.ceil(count / limit),
+        limit,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Error fetching drivers:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 router.get("/user/:id", async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id, {

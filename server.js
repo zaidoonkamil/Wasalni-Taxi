@@ -52,7 +52,7 @@ const io = new Server(server, {
     const chatIO = io.of("/chat");
     chat.initChatSocket(chatIO); 
     
-    await sequelize.sync({ alter: true });
+    await sequelize.sync({ force: false });
     console.log("✅ Database & tables synced!");
 
     server.listen(process.env.PORT || 1002, () => {
