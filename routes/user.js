@@ -297,7 +297,7 @@ router.get("/adminOnly", async (req, res) => {
     const limit = parseInt(req.query.limit) || 30;
     const offset = (page - 1) * limit;
 
-    const { count, rows: drivers } = await User.findAndCountAll({
+    const { count, rows: users } = await User.findAndCountAll({
       where: { role: "admin" },
       limit,
       offset,
@@ -306,7 +306,7 @@ router.get("/adminOnly", async (req, res) => {
     });
 
     return res.status(200).json({
-      drivers,
+      users,
       pagination: {
         totalDrivers: count,
         currentPage: page,
