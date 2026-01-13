@@ -113,11 +113,18 @@ router.post("/drivers/register",
         vehicleColor,
         vehicleNumber,
         location,
+        status,
       } = req.body;
 
       let { phone } = req.body;
       phone = normalizePhone(phone);
 
+      if (status && !["active", "blocked", "pending"].includes(status)) {
+        return res.status(400).json({
+          error: "status غير صحيح (active | blocked | pending)",
+        });
+      }
+      
       if (!name || !phone || !password) {
         return res.status(400).json({ error: "جميع الحقول مطلوبة: name, phone, password" });
       }
@@ -167,7 +174,7 @@ router.post("/drivers/register",
         phone,
         password: hashedPassword,
         role: "driver",
-        status: "pending",
+        status: status || "pending",
         driverImage: { main: driverImg },
         carImages: { main: carImgs[0], images: carImgs },
         vehicleType,
