@@ -298,6 +298,43 @@ router.get("/driversOnly", async (req, res) => {
   }
 });
 
+router.get("/driversOnly/search", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = (page - 1) * limit;
+
+    const search = req.query.q || "";
+
+    const { count, rows: drivers } = await User.findAndCountAll({
+      where: {
+        role: "driver",
+        [Op.or]: [
+          { name: { [Op.like]: `%${search}%` } },
+          { phone: { [Op.like]: `%${search}%` } },
+        ],
+      },
+      limit,
+      offset,
+      order: [["createdAt", "DESC"]],
+      attributes: { exclude: ["password"] },
+    });
+
+    return res.status(200).json({
+      drivers,
+      pagination: {
+        totalDrivers: count,
+        currentPage: page,
+        totalPages: Math.ceil(count / limit),
+        limit,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Error searching drivers:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 router.get("/adminOnly", async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;

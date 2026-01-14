@@ -108,32 +108,6 @@ router.post("/admin/drivers/:id/debt/pay", requireAdmin, async (req, res) => {
   } catch (e) { await t.rollback(); console.error(e.message); res.status(500).json({ error: e.message }); }
 });
 
-// POST reset debt
-router.post("/admin/drivers/:id/debt/reset", requireAdmin, async (req, res) => {
-  const t = await User.sequelize.transaction();
-  try {
-    const driverId = req.params.id;
-    const driver = await User.findByPk(driverId, { transaction: t, lock: t.LOCK.UPDATE });
-    if (!driver) { await t.rollback(); return res.status(404).json({ error: "not_found" }); }
-    const prev = parseFloat(driver.driverDebt || 0);
-    driver.driverDebt = 0;
-    driver.isDebtBlocked = false;
-    driver.blockReason = null;
-    await DriverDebtLedger.create({ driver_id: driver.id, type: "adjustment", amount: prev, note: "reset by admin", admin_id: req.user.id }, { transaction: t });
-    await driver.save({ transaction: t });
-    await t.commit();
-
-    try {
-      const sid = await redisService.client().get(`socket:driver:${driver.id}`);
-      if (sid && socketService) socketService.notifyDriverSocket(driver.id, "driver:debt_cleared", { debt: 0 });
-      else await notifications.sendNotificationToUser(driver.id, `تم تصفير مديونيتك من قبل الأدمن`);
-    } catch (e) {}
-
-    res.json({ success: true, driver });
-  } catch (e) { await t.rollback(); console.error(e.message); res.status(500).json({ error: e.message }); }
-});
-
-// helper to read setting inside this module
 const getSettingValue = async (key) => {
   const s = await SystemSetting.findOne({ where: { key } });
   return s ? s.value : null;
