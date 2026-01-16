@@ -78,6 +78,11 @@ const init = async (io) => {
       // اتصال السائق
       socket.on("driver:online", async () => {
         try {
+          const isDebtBlocked = await redisClient.sIsMember("drivers:debt_blocked", String(user.id));
+          if (isDebtBlocked) {
+            socket.emit("driver:debt_blocked", { ok: false, reason: "debt_blocked" });
+            return;
+          }
           await redisClient.set(`driver:state:${user.id}`, "online", { EX: 3600 });
           await redisClient.sAdd("drivers:online", String(user.id));
           await redisClient.set(socketKey, socket.id, { EX: 3600 });
@@ -317,7 +322,9 @@ const init = async (io) => {
                   if (limit != null && newDebt >= limit) {
                     driver.isDebtBlocked = true;
                     driver.blockReason = "debt";
-                    // remove from redis online/geo to avoid matching
+
+                    await redisClient.sAdd("drivers:debt_blocked", String(driver.id));
+
                     try {
                       await redisClient.del(`driver:state:${driver.id}`);
                       await redisClient.sRem("drivers:online", String(driver.id));
@@ -359,11 +366,6 @@ const init = async (io) => {
             return ack && ack({ ok: false, error: "invalid_payload" });
           }
 
-          console.log("🧾 rider:create_request from riderId=", user.id);
-          console.log("🎯 pickup", pickup.lat, pickup.lng, "addr=", pickup.address);
-          console.log("🏁 dropoff", dropoff.lat, dropoff.lng, "addr=", dropoff.address);
-          console.log("📏 distanceKm=", distanceKm, "durationMin=", durationMin);
-
           const active = await RideRequest.findOne({
             where: {
               rider_id: user.id,
@@ -386,7 +388,6 @@ const init = async (io) => {
             });
           }
 
-          // 2) حساب التسعيرة
           let estimatedFare = null;
 
           const dKmRaw = distanceKm != null ? parseFloat(distanceKm) : null;
@@ -466,7 +467,6 @@ const init = async (io) => {
 
           await t.commit();
           console.log("✅ created request id=", newReq.id, "fare=", newReq.estimatedFare);
-          // 4) matching بعد commit
           const radiusM = 5000;
           const nearby = await redisClient
             .sendCommand([
@@ -489,7 +489,7 @@ const init = async (io) => {
 
           let sentCount = 0;
 
-          // ✅ new: key نخزّن بيه السواق اللي وصلهم الطلب
+          // نخزّن بيه السواق اللي وصلهم الطلب
           const sentKey = `request:sent_to:${newReq.id}`;
 
           for (const did of driverIds) {
@@ -504,13 +504,16 @@ const init = async (io) => {
             const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
             if (isRejected) continue;
 
+            const isDebtBlocked = await redisClient.sIsMember("drivers:debt_blocked", String(did));
+            if (isDebtBlocked) continue;
+
             // 3) لازم عنده سوكت
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
             if (driverSocketId && ioInstance) {
               ioInstance.to(driverSocketId).emit("request:new", { request: newReq });
               sentCount++;
 
-              // ✅ new: خزّن انه انبعت لهذا السائق
+              // خزّن انه انبعت لهذا السائق
               await redisClient.sAdd(sentKey, String(did));
             }
           }

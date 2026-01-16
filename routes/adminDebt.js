@@ -93,6 +93,10 @@ router.post("/admin/drivers/:id/debt/pay", requireAdmin, async (req, res) => {
       driver.isDebtBlocked = false;
       driver.blockReason = null;
     }
+    
+    if (!driver.isDebtBlocked) {
+      try { await redisService.client().sRem("drivers:debt_blocked", String(driver.id)); } catch (e) {}
+    }
 
     await driver.save({ transaction: t });
     await t.commit();
