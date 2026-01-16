@@ -14,7 +14,7 @@ const getSetting = async (key) => {
 };
 
 // GET settings
-router.get("/admin/debt/settings", requireAdmin, async (req, res) => {
+router.get("/admin/debt/settings", async (req, res) => {
   try {
     const limit = await getSetting("DRIVER_DEBT_LIMIT");
     const type = await getSetting("DRIVER_COMMISSION_TYPE");
@@ -93,7 +93,7 @@ router.post("/admin/drivers/:id/debt/pay", requireAdmin, async (req, res) => {
       driver.isDebtBlocked = false;
       driver.blockReason = null;
     }
-    
+
     if (!driver.isDebtBlocked) {
       try { await redisService.client().sRem("drivers:debt_blocked", String(driver.id)); } catch (e) {}
     }
