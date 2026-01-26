@@ -363,6 +363,7 @@ const init = async (io) => {
 
           console.log("[socket rider:create_request] distanceKm raw:", distanceKm);
           console.log("[socket rider:create_request] durationMin raw:", durationMin);
+          console.log("[CREATE VIA SOCKET] rider=", user.id);
 
           if (!pickup || !dropoff) {
             await t.rollback();
@@ -390,6 +391,16 @@ const init = async (io) => {
               status: active.status,
             });
           }
+const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
+let fare = beforeMin;
+fare = Math.max(minimum, fare);
+
+console.log("[FARE CHECK]", {
+  dKm, dur,
+  base, perKm, perMin, minimum,
+  beforeMin,
+  afterMin: fare
+});
 
           let estimatedFare = null;
 
