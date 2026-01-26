@@ -449,6 +449,12 @@ const init = async (io) => {
                 beforeMin,
                 afterMin,
               });
+              console.log("[PAYLOAD]", {
+                pickup: { lat: pickup?.lat, lng: pickup?.lng, address: pickup?.address },
+                dropoff: { lat: dropoff?.lat, lng: dropoff?.lng, address: dropoff?.address },
+                distanceKm,
+                durationMin,
+              });
 
               estimatedFare = String(Math.round(afterMin));
             } else {
