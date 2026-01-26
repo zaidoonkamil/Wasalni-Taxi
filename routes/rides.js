@@ -11,45 +11,107 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
   try {
     const user = req.user;
     const { pickup, dropoff } = req.body;
-    if (!pickup || !dropoff) return res.status(400).json({ error: "pickup and dropoff required" });
 
-    let dKm = req.body.distanceKm != null ? parseFloat(req.body.distanceKm) : (pickup.distanceKm || null);
-    let dur = req.body.durationMin != null ? parseFloat(req.body.durationMin) : (pickup.durationMin || null);
+    if (!pickup || !dropoff) {
+      return res.status(400).json({ error: "pickup and dropoff required" });
+    }
+
+    // parse inputs
+    const bodyDistance = req.body.distanceKm;
+    const bodyDuration = req.body.durationMin;
+
+    let dKm =
+      bodyDistance != null
+        ? parseFloat(bodyDistance)
+        : (pickup.distanceKm != null ? parseFloat(pickup.distanceKm) : null);
+
+    let dur =
+      bodyDuration != null
+        ? parseFloat(bodyDuration)
+        : (pickup.durationMin != null ? parseFloat(pickup.durationMin) : null);
+
+    if (!Number.isFinite(dKm)) dKm = null;
+    if (!Number.isFinite(dur)) dur = null;
+
     let estimatedFare = null;
 
-  console.log("[POST /ride-requests] distanceKm(body):", req.body.distanceKm);
-  console.log("[POST /ride-requests] pickup.distanceKm:", pickup?.distanceKm);
-  console.log("[POST /ride-requests] durationMin(body):", req.body.durationMin);
-  console.log("[POST /ride-requests] pickup.durationMin:", pickup?.durationMin);
-  console.log("[POST /ride-requests] parsed dKm:", dKm, "parsed dur:", dur);
-console.log("[CREATE VIA REST] rider=", req.user?.id);
+    console.log("[CREATE VIA REST] rider=", req.user?.id);
+    console.log("[POST /ride-requests] distanceKm(body):", req.body.distanceKm);
+    console.log("[POST /ride-requests] pickup.distanceKm:", pickup?.distanceKm);
+    console.log("[POST /ride-requests] durationMin(body):", req.body.durationMin);
+    console.log("[POST /ride-requests] pickup.durationMin:", pickup?.durationMin);
+    console.log("[POST /ride-requests] parsed dKm:", dKm, "parsed dur:", dur);
 
     try {
-      const pricing = await PricingSetting.findOne({ order: [["createdAt", "DESC"]] });
-    
+      const pricing = await PricingSetting.findOne({
+        order: [["createdAt", "DESC"]],
+      });
+
       console.log("[POST /ride-requests] pricing:", {
         baseFare: pricing?.baseFare,
         pricePerKm: pricing?.pricePerKm,
         pricePerMinute: pricing?.pricePerMinute,
         minimumFare: pricing?.minimumFare,
       });
-      
-console.log("[REST INPUT]", {
-  bodyDistanceKm: req.body.distanceKm,
-  pickupDistanceKm: pickup?.distanceKm,
-  parsed: dKm,
-});
 
-      if (pricing && dKm != null) {
-        const base = parseFloat(pricing.baseFare || 0);
-        const perKm = parseFloat(pricing.pricePerKm || 0);
-        const perMin = pricing.pricePerMinute ? parseFloat(pricing.pricePerMinute) : 0;
-        const minimum = pricing.minimumFare != null ? parseFloat(pricing.minimumFare) : null;
-        let fare = base + dKm * perKm + (dur != null ? dur * perMin : 0);
-        if (minimum != null) fare = Math.max(minimum, fare);
-        estimatedFare = fare.toFixed(2);
+      console.log("[REST INPUT]", {
+        bodyDistanceKm: req.body.distanceKm,
+        pickupDistanceKm: pickup?.distanceKm,
+        parsed: dKm,
+      });
+
+      // default fallback (if no pricing record)
+      const DEFAULT_PRICING = {
+        baseFare: 2000,
+        pricePerKm: 500,
+        pricePerMinute: 0,
+        minimumFare: 3000,
+      };
+
+      const base =
+        pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
+          ? parseFloat(pricing.baseFare)
+          : DEFAULT_PRICING.baseFare;
+
+      const perKm =
+        pricing?.pricePerKm != null && Number.isFinite(parseFloat(pricing.pricePerKm))
+          ? parseFloat(pricing.pricePerKm)
+          : DEFAULT_PRICING.pricePerKm;
+
+      const perMin =
+        pricing?.pricePerMinute != null && Number.isFinite(parseFloat(pricing.pricePerMinute))
+          ? parseFloat(pricing.pricePerMinute)
+          : DEFAULT_PRICING.pricePerMinute;
+
+      const minimum =
+        pricing?.minimumFare != null && Number.isFinite(parseFloat(pricing.minimumFare))
+          ? parseFloat(pricing.minimumFare)
+          : DEFAULT_PRICING.minimumFare;
+
+      if (dKm != null) {
+        const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
+        const afterMin = Math.max(minimum, beforeMin);
+
+        console.log("[FARE CHECK REST]", {
+          dKm,
+          dur,
+          base,
+          perKm,
+          perMin,
+          minimum,
+          beforeMin,
+          afterMin,
+        });
+
+        // store as integer string (consistent with socket)
+        estimatedFare = String(Math.round(afterMin));
+      } else {
+        console.log("[FARE CHECK REST] skipped: dKm is null");
       }
-    } catch (e) { }
+    } catch (e) {
+      console.error("[POST /ride-requests] pricing calc error:", e.message);
+      // estimatedFare remains null
+    }
 
     const newReq = await RideRequest.create({
       rider_id: user.id,
@@ -61,27 +123,43 @@ console.log("[REST INPUT]", {
       dropoffAddress: dropoff.address || null,
       distanceKm: dKm,
       durationMin: dur,
-      estimatedFare: estimatedFare,
+      estimatedFare,
       status: "pending",
     });
 
-    // اعثر على السائقين القريبين عبر تقنية Redis الجغرافية
+    // find nearby drivers
     const redisClient = await redisService.init();
-    const radiusMeters = parseInt(req.query.radius) || 5000;
-    const raw = await redisClient.sendCommand(["GEORADIUS", "drivers:geo", String(pickup.lng), String(pickup.lat), String(radiusMeters), "m", "COUNT", "30", "ASC"]).catch(() => []);
+    const radiusMeters = parseInt(req.query.radius, 10) || 5000;
+
+    const raw = await redisClient
+      .sendCommand([
+        "GEORADIUS",
+        "drivers:geo",
+        String(pickup.lng),
+        String(pickup.lat),
+        String(radiusMeters),
+        "m",
+        "COUNT",
+        "30",
+        "ASC",
+      ])
+      .catch(() => []);
+
     const driverIds = (raw || []).map(String).slice(0, 30);
 
     for (const did of driverIds) {
       const busyRideId = await redisClient.get(`driver:busy:${did}`);
       if (busyRideId) continue;
 
-      await socketService.notifyDriverSocket(did, "request:new", { request: newReq }).catch(() => {});
+      await socketService
+        .notifyDriverSocket(did, "request:new", { request: newReq })
+        .catch(() => {});
     }
 
-    res.json({ success: true, request: newReq });
+    return res.json({ success: true, request: newReq });
   } catch (e) {
     console.error(e.message);
-    res.status(500).json({ error: e.message });
+    return res.status(500).json({ error: e.message });
   }
 });
 
