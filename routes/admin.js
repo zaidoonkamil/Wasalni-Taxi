@@ -25,10 +25,10 @@ router.put("/admin/pricing", requireAdmin, async (req, res) => {
     const newRec = await PricingSetting.create({
       baseFare,
       pricePerKm,
-      pricePerMinute: pricePerMinute || null,
-      minimumFare: minimumFare || null,
+      pricePerMinute: pricePerMinute != null ? pricePerMinute : null,
+      minimumFare: minimumFare != null ? minimumFare : null,
       surgeEnabled: !!surgeEnabled,
-      surgeMultiplier: surgeMultiplier || 1,
+      surgeMultiplier: surgeMultiplier != null ? surgeMultiplier : 1,
       updatedByAdminId: req.user.id,
     });
 

@@ -374,10 +374,6 @@ const init = async (io) => {
         try {
           const { pickup, dropoff, distanceKm, durationMin } = data;
 
-          console.log("[socket rider:create_request] distanceKm raw:", distanceKm);
-          console.log("[socket rider:create_request] durationMin raw:", durationMin);
-          console.log("[CREATE VIA SOCKET] rider=", user.id);
-
           if (!pickup || !dropoff) {
             await t.rollback();
             return ack && ack({ ok: false, error: "invalid_payload" });
@@ -405,18 +401,12 @@ const init = async (io) => {
             });
           }
 
-          // ---------- parse distance/duration ----------
           let estimatedFare = null;
 
           const serverKm =
             pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
               ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
               : null;
-
-          console.log("[SERVER DIST]", {
-            clientDistanceKm: distanceKm,
-            serverKm: serverKm != null ? Number(serverKm.toFixed(3)) : null,
-          });
 
           const dKm = serverKm != null ? Number(serverKm.toFixed(3)) : null;
           const dur = durationMin != null ? parseFloat(durationMin) : null;
@@ -429,7 +419,6 @@ const init = async (io) => {
             minimumFare: 3000,
           };
 
-          // ---------- pricing calc ----------
           try {
             const pricing = await PricingSetting.findOne({
               order: [["createdAt", "DESC"]],
@@ -460,23 +449,6 @@ const init = async (io) => {
               const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
               const afterMin = Math.max(minimum, beforeMin);
 
-              console.log("[FARE CHECK SOCKET]", {
-                dKm,
-                dur,
-                base,
-                perKm,
-                perMin,
-                minimum,
-                beforeMin,
-                afterMin,
-              });
-              console.log("[PAYLOAD]", {
-                pickup: { lat: pickup?.lat, lng: pickup?.lng, address: pickup?.address },
-                dropoff: { lat: dropoff?.lat, lng: dropoff?.lng, address: dropoff?.address },
-                distanceKm,
-                durationMin,
-              });
-
               estimatedFare = String(Math.round(afterMin));
             } else {
               console.log("[FARE CHECK SOCKET] skipped: dKm is null");
@@ -484,7 +456,6 @@ const init = async (io) => {
           } catch (e) {
             console.error("pricing calc error:", e.message);
 
-            // fallback calc (optional)
             if (dKm != null) {
               const beforeMin =
                 DEFAULT_PRICING.baseFare +
@@ -493,13 +464,11 @@ const init = async (io) => {
 
               const afterMin = Math.max(DEFAULT_PRICING.minimumFare, beforeMin);
 
-              console.log("[FARE CHECK SOCKET FALLBACK]", { dKm, dur, beforeMin, afterMin });
 
               estimatedFare = String(Math.round(afterMin));
             }
           }
 
-          // ---------- create request ----------
           const newReq = await RideRequest.create(
             {
               rider_id: user.id,
@@ -518,9 +487,7 @@ const init = async (io) => {
           );
 
           await t.commit();
-          console.log("✅ created request id=", newReq.id, "fare=", newReq.estimatedFare);
 
-          // ---------- match drivers ----------
           const radiusM = 5000;
           const nearby = await redisClient
             .sendCommand([
