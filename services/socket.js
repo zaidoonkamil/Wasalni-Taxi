@@ -7,6 +7,19 @@ const { Op } = require("sequelize");
 
 let ioInstance = null;
 
+
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const toRad = (x) => (x * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+
 const init = async (io) => {
   ioInstance = io;
 
@@ -395,11 +408,19 @@ const init = async (io) => {
           // ---------- parse distance/duration ----------
           let estimatedFare = null;
 
-          const dKmRaw = distanceKm != null ? parseFloat(distanceKm) : null;
-          const durRaw = durationMin != null ? parseFloat(durationMin) : null;
+          const serverKm =
+            pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
+              ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
+              : null;
 
-          const dKm = Number.isFinite(dKmRaw) ? dKmRaw : null;
-          const dur = Number.isFinite(durRaw) ? durRaw : null;
+          console.log("[SERVER DIST]", {
+            clientDistanceKm: distanceKm,
+            serverKm: serverKm != null ? Number(serverKm.toFixed(3)) : null,
+          });
+
+          const dKm = serverKm != null ? Number(serverKm.toFixed(3)) : null;
+          const dur = durationMin != null ? parseFloat(durationMin) : null;
+
 
           const DEFAULT_PRICING = {
             baseFare: 2000,
