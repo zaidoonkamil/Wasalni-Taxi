@@ -361,6 +361,9 @@ const init = async (io) => {
         try {
           const { pickup, dropoff, distanceKm, durationMin } = data;
 
+          console.log("[socket rider:create_request] distanceKm raw:", distanceKm);
+          console.log("[socket rider:create_request] durationMin raw:", durationMin);
+
           if (!pickup || !dropoff) {
             await t.rollback();
             return ack && ack({ ok: false, error: "invalid_payload" });

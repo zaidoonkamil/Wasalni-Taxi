@@ -16,8 +16,23 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     let dKm = req.body.distanceKm != null ? parseFloat(req.body.distanceKm) : (pickup.distanceKm || null);
     let dur = req.body.durationMin != null ? parseFloat(req.body.durationMin) : (pickup.durationMin || null);
     let estimatedFare = null;
+
+  console.log("[POST /ride-requests] distanceKm(body):", req.body.distanceKm);
+  console.log("[POST /ride-requests] pickup.distanceKm:", pickup?.distanceKm);
+  console.log("[POST /ride-requests] durationMin(body):", req.body.durationMin);
+  console.log("[POST /ride-requests] pickup.durationMin:", pickup?.durationMin);
+  console.log("[POST /ride-requests] parsed dKm:", dKm, "parsed dur:", dur);
+
     try {
       const pricing = await PricingSetting.findOne({ order: [["createdAt", "DESC"]] });
+    
+      console.log("[POST /ride-requests] pricing:", {
+        baseFare: pricing?.baseFare,
+        pricePerKm: pricing?.pricePerKm,
+        pricePerMinute: pricing?.pricePerMinute,
+        minimumFare: pricing?.minimumFare,
+      });
+      
       if (pricing && dKm != null) {
         const base = parseFloat(pricing.baseFare || 0);
         const perKm = parseFloat(pricing.pricePerKm || 0);
