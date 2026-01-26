@@ -391,17 +391,8 @@ const init = async (io) => {
               status: active.status,
             });
           }
-const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
-let fare = beforeMin;
-fare = Math.max(minimum, fare);
 
-console.log("[FARE CHECK]", {
-  dKm, dur,
-  base, perKm, perMin, minimum,
-  beforeMin,
-  afterMin: fare
-});
-
+          // ---------- parse distance/duration ----------
           let estimatedFare = null;
 
           const dKmRaw = distanceKm != null ? parseFloat(distanceKm) : null;
@@ -417,6 +408,7 @@ console.log("[FARE CHECK]", {
             minimumFare: 3000,
           };
 
+          // ---------- pricing calc ----------
           try {
             const pricing = await PricingSetting.findOne({
               order: [["createdAt", "DESC"]],
@@ -444,24 +436,43 @@ console.log("[FARE CHECK]", {
                 : DEFAULT_PRICING.minimumFare;
 
             if (dKm != null) {
-              let fare = base + dKm * perKm + (dur != null ? dur * perMin : 0);
-              fare = Math.max(minimum, fare);
-              estimatedFare = String(Math.round(fare));
+              const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
+              const afterMin = Math.max(minimum, beforeMin);
+
+              console.log("[FARE CHECK SOCKET]", {
+                dKm,
+                dur,
+                base,
+                perKm,
+                perMin,
+                minimum,
+                beforeMin,
+                afterMin,
+              });
+
+              estimatedFare = String(Math.round(afterMin));
+            } else {
+              console.log("[FARE CHECK SOCKET] skipped: dKm is null");
             }
           } catch (e) {
             console.error("pricing calc error:", e.message);
+
+            // fallback calc (optional)
             if (dKm != null) {
-              let fare =
+              const beforeMin =
                 DEFAULT_PRICING.baseFare +
                 dKm * DEFAULT_PRICING.pricePerKm +
                 (dur != null ? dur * DEFAULT_PRICING.pricePerMinute : 0);
 
-              fare = Math.max(DEFAULT_PRICING.minimumFare, fare);
-              estimatedFare = String(Math.round(fare));
+              const afterMin = Math.max(DEFAULT_PRICING.minimumFare, beforeMin);
+
+              console.log("[FARE CHECK SOCKET FALLBACK]", { dKm, dur, beforeMin, afterMin });
+
+              estimatedFare = String(Math.round(afterMin));
             }
           }
 
-          // 3) إنشاء الطلب داخل transaction
+          // ---------- create request ----------
           const newReq = await RideRequest.create(
             {
               rider_id: user.id,
@@ -481,6 +492,8 @@ console.log("[FARE CHECK]", {
 
           await t.commit();
           console.log("✅ created request id=", newReq.id, "fare=", newReq.estimatedFare);
+
+          // ---------- match drivers ----------
           const radiusM = 5000;
           const nearby = await redisClient
             .sendCommand([
@@ -502,8 +515,6 @@ console.log("[FARE CHECK]", {
           const driverIds = (nearby || []).map(String).slice(0, 30);
 
           let sentCount = 0;
-
-          // نخزّن بيه السواق اللي وصلهم الطلب
           const sentKey = `request:sent_to:${newReq.id}`;
 
           for (const did of driverIds) {
@@ -513,7 +524,6 @@ console.log("[FARE CHECK]", {
             const busyRideId = await redisClient.get(`driver:busy:${did}`);
             if (busyRideId) continue;
 
-            // 2) إذا رافض الطلب لا تبعث له
             const rejectedKey = `request:rejected:${newReq.id}`;
             const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
             if (isRejected) continue;
@@ -521,18 +531,14 @@ console.log("[FARE CHECK]", {
             const isDebtBlocked = await redisClient.sIsMember("drivers:debt_blocked", String(did));
             if (isDebtBlocked) continue;
 
-            // 3) لازم عنده سوكت
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
             if (driverSocketId && ioInstance) {
               ioInstance.to(driverSocketId).emit("request:new", { request: newReq });
               sentCount++;
-
-              // خزّن انه انبعت لهذا السائق
               await redisClient.sAdd(sentKey, String(did));
             }
           }
 
-          // ✅ new: خلي الـ set ينتهي بعد ساعة
           await redisClient.expire(sentKey, 3600);
 
           console.log("📤 done matching. sentCount=", sentCount);
@@ -543,7 +549,6 @@ console.log("[FARE CHECK]", {
             request: newReq,
             debug: { radiusM, driverIds, sentCount },
           });
-
         } catch (e) {
           try {
             await t.rollback();
