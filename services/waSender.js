@@ -4,9 +4,12 @@ const WA_BASE_URL = process.env.WA_BASE_URL;
 const WA_API_KEY  = process.env.WA_API_KEY;
 
 async function sendWhatsAppText(toPhoneE164NoPlus, message) {
+  if (!WA_BASE_URL) throw new Error("WA_BASE_URL missing");
+  if (!WA_API_KEY) throw new Error("WA_API_KEY missing");
+
   const headers = {
     "Content-Type": "application/json",
-    "Authorization": `Bearer ${WA_API_KEY}`,
+    "X-API-Key": WA_API_KEY,
   };
 
   const payload = {
