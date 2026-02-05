@@ -8,6 +8,137 @@ const uploadImage = require("../middlewares/uploads");
 const router = express.Router();
 const upload = multer();
 const saltRounds = 10;
+const crypto = require("crypto");
+const { sendWhatsAppText } = require("../services/waSender");
+
+function generateOtp() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+const RESEND_COOLDOWN_SECONDS = 60;
+const OTP_EXPIRES_MIN = 5;
+
+function hashOtp(code) {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
+
+router.post("/verify-otp", upload.none(), async (req, res) => {
+  try {
+    let { phone, code } = req.body;
+    phone = normalizePhone(phone);
+    code = String(code || "").trim();
+
+    if (!phone || !code) {
+      return res.status(400).json({ error: "phone و code مطلوبات" });
+    }
+
+    const otpRow = await OtpCode.findOne({
+      where: {
+        phone,
+        purpose: "verify_account",
+        consumedAt: null,
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    if (!otpRow) return res.status(400).json({ error: "لا يوجد رمز فعال" });
+
+    if (new Date() > new Date(otpRow.expiresAt)) {
+      return res.status(400).json({ error: "انتهت صلاحية الرمز" });
+    }
+
+    if (otpRow.attemptsLeft <= 0) {
+      return res.status(400).json({ error: "تم تجاوز عدد المحاولات" });
+    }
+
+    const inputHash = hashOtp(code);
+    if (inputHash !== otpRow.codeHash) {
+      otpRow.attemptsLeft -= 1;
+      await otpRow.save();
+      return res.status(400).json({ error: "رمز غير صحيح" });
+    }
+
+    otpRow.consumedAt = new Date();
+    await otpRow.save();
+
+    const user = await User.findOne({ where: { phone, role: "user" } });
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+
+    user.status = "active";
+    await user.save();
+
+    const token = generateToken(user);
+
+    return res.status(200).json({
+      message: "تم توثيق الحساب بنجاح",
+      user: safeUser(user),
+      token,
+    });
+  } catch (err) {
+    console.error("❌ verify-otp error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+router.post("/resend-otp", async (req, res) => {
+  try {
+    let { phone } = req.body;
+    phone = normalizePhone(phone);
+
+    if (!phone) return res.status(400).json({ error: "phone مطلوب" });
+
+    const user = await User.findOne({ where: { phone, role: "user" } });
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+
+    if (user.status === "active") {
+      return res.status(400).json({ error: "الحساب موثق مسبقًا" });
+    }
+    if (user.status === "blocked") {
+      return res.status(403).json({ error: "الحساب محظور" });
+    }
+
+    const lastOtp = await OtpCode.findOne({
+      where: {
+        phone,
+        purpose: "verify_account",
+        consumedAt: null,
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    if (lastOtp) {
+      const secondsSinceLast = Math.floor((Date.now() - new Date(lastOtp.createdAt).getTime()) / 1000);
+      if (secondsSinceLast < RESEND_COOLDOWN_SECONDS) {
+        return res.status(429).json({
+          error: `يرجى الانتظار ${RESEND_COOLDOWN_SECONDS - secondsSinceLast} ثانية قبل إعادة الإرسال`,
+        });
+      }
+
+      lastOtp.consumedAt = new Date();
+      await lastOtp.save();
+    }
+
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + OTP_EXPIRES_MIN * 60 * 1000);
+
+    await OtpCode.create({
+      phone,
+      codeHash: hashOtp(otp),
+      purpose: "verify_account",
+      expiresAt,
+      attemptsLeft: 5,
+      consumedAt: null,
+    });
+
+    const msg = `رمز التحقق الخاص بك هو: ${otp}\nصالح لمدة ${OTP_EXPIRES_MIN} دقائق.`;
+    await sendWhatsAppText(phone, msg);
+
+    return res.status(200).json({ message: "تم إعادة إرسال رمز التحقق عبر واتساب" });
+  } catch (err) {
+    console.error("❌ resend-otp error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
 const normalizePhone = (phone = "") => {
   phone = String(phone).trim();
@@ -212,6 +343,10 @@ router.post("/login", upload.none(), async (req, res) => {
     const user = await User.findOne({ where: { phone } });
     if (!user) {
       return res.status(400).json({ error: "يرجى إدخال رقم الهاتف بشكل صحيح" });
+    }
+
+    if (user.role === "user" && user.status === "pending") {
+      return res.status(403).json({ error: "الحساب غير موثق. يرجى إدخال رمز التحقق." });
     }
 
     if (user.status === "blocked") {
