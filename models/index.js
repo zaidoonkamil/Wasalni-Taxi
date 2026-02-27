@@ -7,6 +7,7 @@ const SystemSetting = require("./system_setting");
 const DriverDebtLedger = require("./driver_debt_ledger");
 const ChatMessage = require("./ChatMessage");
 const OtpCode = require("./OtpCode");
+const PasswordResetOtp = require("./PasswordResetOtp");
 
 User.hasMany(UserDevice, { foreignKey: "user_id", as: "devices", onDelete: "CASCADE" });
 UserDevice.belongsTo(User, { foreignKey: "user_id", as: "user" });
@@ -40,4 +41,5 @@ module.exports = {
   DriverDebtLedger,
   ChatMessage,
   OtpCode,
+  PasswordResetOtp,
 };

@@ -3,7 +3,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { Op } = require("sequelize");
-const { User, UserDevice, OtpCode } = require("../models");
+const { User, UserDevice, OtpCode, PasswordResetOtp } = require("../models");
 const uploadImage = require("../middlewares/uploads");
 const router = express.Router();
 const upload = multer();
@@ -36,10 +36,9 @@ router.post("/forgot-password", upload.none(), async (req, res) => {
       return res.status(403).json({ error: "الحساب محظور" });
     }
 
-    const lastOtp = await OtpCode.findOne({
+    const lastOtp = await PasswordResetOtp.findOne({
       where: {
         phone,
-        purpose: "reset_password",
         consumedAt: null,
       },
       order: [["createdAt", "DESC"]],
@@ -65,10 +64,9 @@ router.post("/forgot-password", upload.none(), async (req, res) => {
     const otp = generateOtp();
     const expiresAt = new Date(Date.now() + OTP_EXPIRES_MIN * 60 * 1000);
 
-    await OtpCode.create({
+    await PasswordResetOtp.create({
       phone,
       codeHash: hashOtp(otp),
-      purpose: "reset_password",
       expiresAt,
       attemptsLeft: 5,
       consumedAt: null,
@@ -104,10 +102,9 @@ router.post("/reset-password", upload.none(), async (req, res) => {
       return res.status(400).json({ error: "كلمة المرور قصيرة (6 أحرف على الأقل)" });
     }
 
-    const otpRow = await OtpCode.findOne({
+    const otpRow = await PasswordResetOtp.findOne({
       where: {
         phone,
-        purpose: "reset_password",
         consumedAt: null,
       },
       order: [["createdAt", "DESC"]],
