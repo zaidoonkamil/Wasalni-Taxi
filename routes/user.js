@@ -22,6 +22,141 @@ function hashOtp(code) {
   return crypto.createHash("sha256").update(code).digest("hex");
 }
 
+router.post("/forgot-password", upload.none(), async (req, res) => {
+  try {
+    let { phone } = req.body;
+    phone = normalizePhone(phone);
+
+    if (!phone) return res.status(400).json({ error: "phone مطلوب" });
+
+    const user = await User.findOne({ where: { phone } });
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+
+    if (user.status === "blocked") {
+      return res.status(403).json({ error: "الحساب محظور" });
+    }
+
+    const lastOtp = await OtpCode.findOne({
+      where: {
+        phone,
+        purpose: "reset_password",
+        consumedAt: null,
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    if (lastOtp) {
+      const secondsSinceLast = Math.floor(
+        (Date.now() - new Date(lastOtp.createdAt).getTime()) / 1000
+      );
+
+      if (secondsSinceLast < RESEND_COOLDOWN_SECONDS) {
+        return res.status(429).json({
+          error: `يرجى الانتظار ${
+            RESEND_COOLDOWN_SECONDS - secondsSinceLast
+          } ثانية قبل إعادة الإرسال`,
+        });
+      }
+
+      lastOtp.consumedAt = new Date();
+      await lastOtp.save();
+    }
+
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + OTP_EXPIRES_MIN * 60 * 1000);
+
+    await OtpCode.create({
+      phone,
+      codeHash: hashOtp(otp),
+      purpose: "reset_password",
+      expiresAt,
+      attemptsLeft: 5,
+      consumedAt: null,
+    });
+
+    const msg = `رمز إعادة تعيين كلمة المرور هو: ${otp}\nصالح لمدة ${OTP_EXPIRES_MIN} دقائق.`;
+    await sendWhatsAppText(phone, msg);
+
+    return res.status(200).json({
+      message: "تم إرسال رمز إعادة تعيين كلمة المرور عبر واتساب",
+    });
+  } catch (err) {
+    console.error("❌ forgot-password error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+router.post("/reset-password", upload.none(), async (req, res) => {
+  try {
+    let { phone, code, newPassword } = req.body;
+
+    phone = normalizePhone(phone);
+    code = String(code || "").trim();
+    newPassword = String(newPassword || "").trim();
+
+    if (!phone || !code || !newPassword) {
+      return res.status(400).json({
+        error: "phone و code و newPassword مطلوبات",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "كلمة المرور قصيرة (6 أحرف على الأقل)" });
+    }
+
+    const otpRow = await OtpCode.findOne({
+      where: {
+        phone,
+        purpose: "reset_password",
+        consumedAt: null,
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    if (!otpRow) return res.status(400).json({ error: "لا يوجد رمز فعال" });
+
+    if (new Date() > new Date(otpRow.expiresAt)) {
+      return res.status(400).json({ error: "انتهت صلاحية الرمز" });
+    }
+
+    if (otpRow.attemptsLeft <= 0) {
+      return res.status(400).json({ error: "تم تجاوز عدد المحاولات" });
+    }
+
+    const inputHash = hashOtp(code);
+    if (inputHash !== otpRow.codeHash) {
+      otpRow.attemptsLeft -= 1;
+      await otpRow.save();
+      return res.status(400).json({ error: "رمز غير صحيح" });
+    }
+
+    otpRow.consumedAt = new Date();
+    await otpRow.save();
+
+    const user = await User.findOne({ where: { phone } });
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+
+    if (user.status === "blocked") {
+      return res.status(403).json({ error: "الحساب محظور" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+    user.password = hashedPassword;
+    await user.save();
+
+    const token = generateToken(user);
+
+    return res.status(200).json({
+      message: "تم تغيير كلمة المرور بنجاح",
+      user: safeUser(user),
+      token,
+    });
+  } catch (err) {
+    console.error("❌ reset-password error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 router.post("/verify-otp", upload.none(), async (req, res) => {
   try {
     let { phone, code } = req.body;
