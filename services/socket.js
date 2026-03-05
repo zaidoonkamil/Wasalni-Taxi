@@ -447,9 +447,11 @@ const init = async (io) => {
 
             if (dKm != null) {
               const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
-              const afterMin = Math.max(minimum, beforeMin);
+              const afterMin  = Math.max(minimum, beforeMin);
 
-              estimatedFare = String(Math.round(afterMin));
+              const rounded = Math.round(afterMin / 250) * 250;
+
+              estimatedFare = String(rounded);
             } else {
               console.log("[FARE CHECK SOCKET] skipped: dKm is null");
             }
@@ -464,8 +466,9 @@ const init = async (io) => {
 
               const afterMin = Math.max(DEFAULT_PRICING.minimumFare, beforeMin);
 
+              const rounded = Math.round(afterMin / 250) * 250;
 
-              estimatedFare = String(Math.round(afterMin));
+              estimatedFare = String(rounded);
             }
           }
 

@@ -96,9 +96,9 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
         const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
         const afterMin = Math.max(minimum, beforeMin);
 
-        const finalFare = roundUpTo250(afterMin);
+        const rounded = Math.round(afterMin / 250) * 250;
 
-        estimatedFare = String(Math.round(finalFare));
+        estimatedFare = String(rounded);
 
       } else {
         console.log("[FARE CHECK REST] skipped: dKm is null");
