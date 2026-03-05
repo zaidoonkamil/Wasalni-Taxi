@@ -6,8 +6,8 @@ const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const { Op } = require("sequelize");
 
-function roundToNearestStep(amount, step = 250) {
-  return Math.round(amount / step) * step;
+function roundUpTo250(amount) {
+  return Math.ceil(amount / 250) * 250;
 }
 
 // إنشاء طلب رحلة جديد (REST)
@@ -96,9 +96,9 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
         const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
         const afterMin = Math.max(minimum, beforeMin);
 
-        const roundedFare = roundToNearestStep(afterMin, 250);
+        const finalFare = roundUpTo250(afterMin);
 
-        estimatedFare = String(Math.round(roundedFare));
+        estimatedFare = String(Math.round(finalFare));
 
       } else {
         console.log("[FARE CHECK REST] skipped: dKm is null");
