@@ -8,6 +8,7 @@ const ridesRouter = require("./routes/rides");
 const adminRouter = require("./routes/admin");
 const adminStatsRouter = require("./routes/adminStats");
 const adminDebtRouter = require("./routes/adminDebt");
+const whatsappRouter = require("./routes/whatsapp");
 
 const redisService = require("./services/redis");
 const socketService = require("./services/socket");
@@ -33,6 +34,7 @@ app.use("/", ridesRouter);
 app.use("/", adminRouter);
 app.use("/", adminStatsRouter);
 app.use("/", adminDebtRouter);
+app.use("/", whatsappRouter);
 app.use("/", chat.router);
 
 const server = http.createServer(app);
