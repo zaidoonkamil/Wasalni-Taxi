@@ -23,6 +23,51 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 let manualLogout = false;
 
+function resetRuntimeState() {
+  latestQrText = null;
+  latestQrImage = null;
+  connectedNumber = null;
+  authenticated = false;
+}
+
+function dropClientReference(reason = "client_reset") {
+  latestError = reason;
+  connectionStatus = "disconnected";
+  client = null;
+  initializingPromise = null;
+  resetRuntimeState();
+}
+
+function isRecoverableSessionError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+
+  return (
+    message.includes("detached frame") ||
+    message.includes("execution context was destroyed") ||
+    message.includes("cannot find context with specified id") ||
+    message.includes("target closed") ||
+    message.includes("session closed") ||
+    message.includes("protocol error")
+  );
+}
+
+async function destroyClientSilently(instance) {
+  if (!instance) return;
+
+  try {
+    await instance.destroy();
+  } catch (_) {
+  }
+}
+
+async function recoverClientFromRuntimeError(error) {
+  const failingClient = client;
+  clearReconnectTimer();
+  dropClientReference(error?.message || "recoverable_runtime_error");
+  await destroyClientSilently(failingClient);
+  return initWhatsAppClient();
+}
+
 function ensureSessionPath() {
   fs.mkdirSync(SESSION_PATH, { recursive: true });
 }
@@ -143,14 +188,7 @@ function bindClientEvents(instance) {
   });
 
   instance.on("disconnected", (reason) => {
-    authenticated = false;
-    connectionStatus = "disconnected";
-    latestError = reason || "Client disconnected";
-    latestQrText = null;
-    latestQrImage = null;
-    connectedNumber = null;
-    client = null;
-    initializingPromise = null;
+    dropClientReference(reason || "Client disconnected");
 
     if (!manualLogout) {
       scheduleReconnect(reason || "Client disconnected");
@@ -223,10 +261,7 @@ async function logoutWhatsApp() {
 
   if (!client) {
     connectionStatus = "idle";
-    authenticated = false;
-    latestQrText = null;
-    latestQrImage = null;
-    connectedNumber = null;
+    resetRuntimeState();
     return { success: true, status: connectionStatus };
   }
 
@@ -242,12 +277,9 @@ async function logoutWhatsApp() {
 
   client = null;
   initializingPromise = null;
-  latestQrText = null;
-  latestQrImage = null;
   latestError = null;
   connectionStatus = "idle";
-  authenticated = false;
-  connectedNumber = null;
+  resetRuntimeState();
 
   return { success: true, status: connectionStatus };
 }
@@ -281,15 +313,34 @@ async function sendWhatsAppText(phone, message) {
     throw new Error("Message is required");
   }
 
-  const { phone: normalizedPhone, chatId } = await resolveChatId(phone);
-  const sentMessage = await client.sendMessage(chatId, String(message).trim());
+  try {
+    const { phone: normalizedPhone, chatId } = await resolveChatId(phone);
+    const sentMessage = await client.sendMessage(chatId, String(message).trim());
 
-  return {
-    to: normalizedPhone,
-    messageId: sentMessage?.id?._serialized || null,
-    timestamp: sentMessage?.timestamp || null,
-    status: "sent",
-  };
+    return {
+      to: normalizedPhone,
+      messageId: sentMessage?.id?._serialized || null,
+      timestamp: sentMessage?.timestamp || null,
+      status: "sent",
+    };
+  } catch (error) {
+    if (!isRecoverableSessionError(error)) {
+      throw error;
+    }
+
+    latestError = `Recovered from runtime error: ${error.message || error}`;
+    await recoverClientFromRuntimeError(error);
+
+    const { phone: normalizedPhone, chatId } = await resolveChatId(phone);
+    const sentMessage = await client.sendMessage(chatId, String(message).trim());
+
+    return {
+      to: normalizedPhone,
+      messageId: sentMessage?.id?._serialized || null,
+      timestamp: sentMessage?.timestamp || null,
+      status: "sent_after_recovery",
+    };
+  }
 }
 
 module.exports = {
