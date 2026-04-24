@@ -9,6 +9,7 @@ const adminRouter = require("./routes/admin");
 const adminStatsRouter = require("./routes/adminStats");
 const adminDebtRouter = require("./routes/adminDebt");
 const whatsappRouter = require("./routes/whatsapp");
+const { startWhatsAppAutoInit } = require("./services/waSender");
 
 const redisService = require("./services/redis");
 const socketService = require("./services/socket");
@@ -55,6 +56,7 @@ const io = new Server(server, {
     chat.initChatSocket(chatIO); 
     
     await sequelize.sync({ force: false });
+    startWhatsAppAutoInit();
     console.log("✅ Database & tables synced!");
 
     server.listen(process.env.PORT || 1002, () => {

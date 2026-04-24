@@ -3,24 +3,167 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { Op } = require("sequelize");
-const { User, UserDevice, OtpCode, PasswordResetOtp } = require("../models");
+const { User, UserDevice } = require("../models");
 const uploadImage = require("../middlewares/uploads");
 const router = express.Router();
 const upload = multer();
 const saltRounds = 10;
-const crypto = require("crypto");
+const {
+  OTP_PURPOSES,
+  createOtp,
+  normalizePhone: normalizePhoneService,
+  verifyOtp: verifyOtpService,
+} = require("../services/otpService");
 const { sendWhatsAppText } = require("../services/waSender");
 
-function generateOtp() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+async function sendOtpForPurpose(phone, purpose) {
+  const otp = await createOtp(phone, purpose);
+  const message = purpose === OTP_PURPOSES.passwordReset
+    ? `رمز إعادة تعيين كلمة المرور هو: ${otp.code}\nصالح لمدة ${Math.floor(otp.expiresInSeconds / 60)} دقائق.\nلا تشارك هذا الرمز مع أي شخص.`
+    : `رمز التحقق الخاص بك هو: ${otp.code}\nصالح لمدة ${Math.floor(otp.expiresInSeconds / 60)} دقائق.\nلا تشارك هذا الرمز مع أي شخص.`;
+
+  await sendWhatsAppText(otp.phone, message);
+  return otp;
 }
 
-const RESEND_COOLDOWN_SECONDS = 60;
-const OTP_EXPIRES_MIN = 5;
+router.post("/forgot-password", upload.none(), async (req, res, next) => {
+  try {
+    const phone = normalizePhoneService(req.body.phone);
 
-function hashOtp(code) {
-  return crypto.createHash("sha256").update(code).digest("hex");
-}
+    if (!phone) {
+      return res.status(400).json({ error: "phone مطلوب" });
+    }
+
+    const user = await User.findOne({ where: { phone } });
+    if (!user) {
+      return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
+
+    if (user.status === "blocked") {
+      return res.status(403).json({ error: "الحساب محظور" });
+    }
+
+    const otp = await sendOtpForPurpose(phone, OTP_PURPOSES.passwordReset);
+    return res.status(200).json({
+      success: true,
+      phone: otp.phone,
+      expiresInSeconds: otp.expiresInSeconds,
+      retryAfterSeconds: otp.retryAfterSeconds,
+      message: "تم إرسال رمز إعادة تعيين كلمة المرور عبر واتساب",
+    });
+  } catch (error) {
+    if (res.headersSent) return next(error);
+    return res.status(400).json({ error: error.message || "Internal Server Error" });
+  }
+});
+
+router.post("/reset-password", upload.none(), async (req, res, next) => {
+  try {
+    const phone = normalizePhoneService(req.body.phone);
+    const code = String(req.body.code || "").trim();
+    const newPassword = String(req.body.newPassword || "").trim();
+
+    if (!phone || !code || !newPassword) {
+      return res.status(400).json({ error: "phone و code و newPassword مطلوبات" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "كلمة المرور قصيرة (6 أحرف على الأقل)" });
+    }
+
+    await verifyOtpService(phone, code, OTP_PURPOSES.passwordReset);
+
+    const user = await User.findOne({ where: { phone } });
+    if (!user) {
+      return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
+
+    if (user.status === "blocked") {
+      return res.status(403).json({ error: "الحساب محظور" });
+    }
+
+    user.password = await bcrypt.hash(newPassword, saltRounds);
+    await user.save();
+
+    const token = generateToken(user);
+    return res.status(200).json({
+      success: true,
+      message: "تم تغيير كلمة المرور بنجاح",
+      user: safeUser(user),
+      token,
+    });
+  } catch (error) {
+    if (res.headersSent) return next(error);
+    return res.status(400).json({ error: error.message || "Internal Server Error" });
+  }
+});
+
+router.post("/verify-otp", upload.none(), async (req, res, next) => {
+  try {
+    const phone = normalizePhoneService(req.body.phone);
+    const code = String(req.body.code || "").trim();
+
+    if (!phone || !code) {
+      return res.status(400).json({ error: "phone و code مطلوبات" });
+    }
+
+    await verifyOtpService(phone, code, OTP_PURPOSES.verifyAccount);
+
+    const user = await User.findOne({ where: { phone, role: "user" } });
+    if (!user) {
+      return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
+
+    user.status = "active";
+    await user.save();
+
+    const token = generateToken(user);
+    return res.status(200).json({
+      success: true,
+      message: "تم توثيق الحساب بنجاح",
+      user: safeUser(user),
+      token,
+    });
+  } catch (error) {
+    if (res.headersSent) return next(error);
+    return res.status(400).json({ error: error.message || "Internal Server Error" });
+  }
+});
+
+router.post("/resend-otp", upload.none(), async (req, res, next) => {
+  try {
+    const phone = normalizePhoneService(req.body.phone);
+
+    if (!phone) {
+      return res.status(400).json({ error: "phone مطلوب" });
+    }
+
+    const user = await User.findOne({ where: { phone, role: "user" } });
+    if (!user) {
+      return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
+
+    if (user.status === "active") {
+      return res.status(400).json({ error: "الحساب موثق مسبقًا" });
+    }
+
+    if (user.status === "blocked") {
+      return res.status(403).json({ error: "الحساب محظور" });
+    }
+
+    const otp = await sendOtpForPurpose(phone, OTP_PURPOSES.verifyAccount);
+    return res.status(200).json({
+      success: true,
+      phone: otp.phone,
+      expiresInSeconds: otp.expiresInSeconds,
+      retryAfterSeconds: otp.retryAfterSeconds,
+      message: "تم إعادة إرسال رمز التحقق عبر واتساب",
+    });
+  } catch (error) {
+    if (res.headersSent) return next(error);
+    return res.status(400).json({ error: error.message || "Internal Server Error" });
+  }
+});
 
 router.post("/forgot-password", upload.none(), async (req, res) => {
   try {
