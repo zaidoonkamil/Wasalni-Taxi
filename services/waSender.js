@@ -124,6 +124,23 @@ function removeFileIfExists(filePath) {
   }
 }
 
+function getClientSessionDirectory() {
+  return path.join(SESSION_PATH, `session-${CLIENT_ID}`);
+}
+
+function removeDirectoryIfExists(dirPath) {
+  try {
+    if (fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    }
+  } catch (_) {
+  }
+}
+
+function clearStaleWhatsAppSession() {
+  removeDirectoryIfExists(getClientSessionDirectory());
+}
+
 function clearChromiumProfileLocks(rootDir) {
   if (!fs.existsSync(rootDir)) {
     return;
@@ -323,6 +340,7 @@ async function initWhatsAppClient() {
       if (isProfileLockError(error)) {
         killChromiumProcessesForSession();
         clearChromiumProfileLocks(SESSION_PATH);
+        clearStaleWhatsAppSession();
       }
       latestError = error.message;
       connectionStatus = "failed";
@@ -343,8 +361,9 @@ async function initWhatsAppClient() {
 
     killChromiumProcessesForSession();
     clearChromiumProfileLocks(SESSION_PATH);
+    clearStaleWhatsAppSession();
     connectionStatus = "initializing";
-    latestError = "Retrying after clearing Chromium profile locks";
+    latestError = "Retrying after clearing Chromium locks and stale WhatsApp session";
 
     client = new Client({
       authStrategy: new LocalAuth({
@@ -416,6 +435,7 @@ async function logoutWhatsApp() {
   latestError = null;
   connectionStatus = "idle";
   resetRuntimeState();
+  clearStaleWhatsAppSession();
 
   return { success: true, status: connectionStatus };
 }
