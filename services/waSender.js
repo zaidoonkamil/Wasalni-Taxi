@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const { execSync } = require("child_process");
 const qrcode = require("qrcode");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 
@@ -79,6 +80,39 @@ async function recoverClientFromRuntimeError(error) {
 
 function ensureSessionPath() {
   fs.mkdirSync(SESSION_PATH, { recursive: true });
+}
+
+function getSessionSearchTokens() {
+  const normalized = SESSION_PATH.replace(/\\/g, "/");
+  const authDirName = path.basename(SESSION_PATH);
+  const clientDirName = `session-${CLIENT_ID}`;
+
+  return [normalized, authDirName, clientDirName].filter(Boolean);
+}
+
+function killChromiumProcessesForSession() {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const tokens = getSessionSearchTokens();
+
+  for (const token of tokens) {
+    try {
+      execSync(`pkill -f "${token}"`, { stdio: "ignore" });
+    } catch (_) {
+    }
+  }
+
+  try {
+    execSync(`pkill -f "chrome.*${CLIENT_ID}"`, { stdio: "ignore" });
+  } catch (_) {
+  }
+
+  try {
+    execSync(`pkill -f "chromium.*${CLIENT_ID}"`, { stdio: "ignore" });
+  } catch (_) {
+  }
 }
 
 function removeFileIfExists(filePath) {
@@ -268,6 +302,7 @@ async function initWhatsAppClient() {
   manualLogout = false;
   clearReconnectTimer();
   ensureSessionPath();
+  killChromiumProcessesForSession();
   clearChromiumProfileLocks(SESSION_PATH);
 
   client = new Client({
@@ -286,6 +321,7 @@ async function initWhatsAppClient() {
   initializingPromise = client.initialize()
     .catch((error) => {
       if (isProfileLockError(error)) {
+        killChromiumProcessesForSession();
         clearChromiumProfileLocks(SESSION_PATH);
       }
       latestError = error.message;
@@ -305,6 +341,7 @@ async function initWhatsAppClient() {
       throw error;
     }
 
+    killChromiumProcessesForSession();
     clearChromiumProfileLocks(SESSION_PATH);
     connectionStatus = "initializing";
     latestError = "Retrying after clearing Chromium profile locks";
