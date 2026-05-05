@@ -30,6 +30,15 @@ function resetRuntimeState() {
   authenticated = false;
 }
 
+function isProfileLockError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("profile appears to be in use") ||
+    message.includes("chromium has locked the profile") ||
+    message.includes("failed to launch the browser process")
+  );
+}
+
 function dropClientReference(reason = "client_reset") {
   latestError = reason;
   connectionStatus = "disconnected";
@@ -70,6 +79,54 @@ async function recoverClientFromRuntimeError(error) {
 
 function ensureSessionPath() {
   fs.mkdirSync(SESSION_PATH, { recursive: true });
+}
+
+function removeFileIfExists(filePath) {
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.rmSync(filePath, { force: true, recursive: true });
+    }
+  } catch (_) {
+  }
+}
+
+function clearChromiumProfileLocks(rootDir) {
+  if (!fs.existsSync(rootDir)) {
+    return;
+  }
+
+  const lockNames = new Set([
+    "SingletonLock",
+    "SingletonCookie",
+    "SingletonSocket",
+    ".org.chromium.Chromium.*",
+  ]);
+
+  const walk = (currentDir) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+
+      const matchesWildcard =
+        entry.name.startsWith(".org.chromium.Chromium.");
+      if (lockNames.has(entry.name) || matchesWildcard) {
+        removeFileIfExists(fullPath);
+      }
+    }
+  };
+
+  walk(rootDir);
 }
 
 function clearReconnectTimer() {
@@ -211,6 +268,7 @@ async function initWhatsAppClient() {
   manualLogout = false;
   clearReconnectTimer();
   ensureSessionPath();
+  clearChromiumProfileLocks(SESSION_PATH);
 
   client = new Client({
     authStrategy: new LocalAuth({
@@ -227,6 +285,9 @@ async function initWhatsAppClient() {
 
   initializingPromise = client.initialize()
     .catch((error) => {
+      if (isProfileLockError(error)) {
+        clearChromiumProfileLocks(SESSION_PATH);
+      }
       latestError = error.message;
       connectionStatus = "failed";
       client = null;
@@ -237,7 +298,45 @@ async function initWhatsAppClient() {
       initializingPromise = null;
     });
 
-  await initializingPromise;
+  try {
+    await initializingPromise;
+  } catch (error) {
+    if (!isProfileLockError(error)) {
+      throw error;
+    }
+
+    clearChromiumProfileLocks(SESSION_PATH);
+    connectionStatus = "initializing";
+    latestError = "Retrying after clearing Chromium profile locks";
+
+    client = new Client({
+      authStrategy: new LocalAuth({
+        clientId: CLIENT_ID,
+        dataPath: SESSION_PATH,
+      }),
+      puppeteer: {
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      },
+    });
+
+    bindClientEvents(client);
+
+    initializingPromise = client.initialize()
+      .catch((retryError) => {
+        latestError = retryError.message;
+        connectionStatus = "failed";
+        client = null;
+        scheduleReconnect(retryError.message);
+        throw retryError;
+      })
+      .finally(() => {
+        initializingPromise = null;
+      });
+
+    await initializingPromise;
+  }
+
   return getStatus();
 }
 
