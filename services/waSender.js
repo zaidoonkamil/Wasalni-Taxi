@@ -1,32 +1,30 @@
 const path = require("path");
 const fs = require("fs");
-const { execSync } = require("child_process");
 const qrcode = require("qrcode");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const P = require("pino");
+const baileys = require("@whiskeysockets/baileys");
+
+const {
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  useMultiFileAuthState,
+} = baileys;
+
+const makeWASocket = baileys.default;
 
 const SESSION_PATH = process.env.WHATSAPP_SESSION_PATH
   ? path.resolve(process.env.WHATSAPP_SESSION_PATH)
-  : path.join(__dirname, "..", ".wwebjs_auth");
+  : path.join(__dirname, "..", ".baileys_auth");
 const CLIENT_ID = process.env.WHATSAPP_CLIENT_ID || "wasalni";
 const AUTO_INIT = process.env.WHATSAPP_AUTO_INIT === "true";
 const RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_DELAY_MS || 15000);
 const MAX_RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_MAX_RECONNECT_DELAY_MS || 120000);
-// Set to "false" to keep expired session files (not recommended)
 const CLEAR_EXPIRED_SESSION = process.env.WHATSAPP_CLEAR_EXPIRED_SESSION !== "false";
 
-// WhatsApp disconnect reasons that mean the session is permanently invalid.
-// NAVIGATION  = user logged out from phone
-// CONFLICT    = user logged in from another browser/device
-// UNLAUNCHED  = session was never properly started
-// DEPRECATED_VERSION = client version rejected by WhatsApp
-const EXPIRED_SESSION_REASONS = new Set([
-  "NAVIGATION",
-  "CONFLICT",
-  "UNLAUNCHED",
-  "DEPRECATED_VERSION",
-]);
+const logger = P({ level: process.env.WHATSAPP_LOG_LEVEL || "silent" });
 
-let client = null;
+let socket = null;
 let initializingPromise = null;
 let latestQrText = null;
 let latestQrImage = null;
@@ -38,6 +36,7 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 let manualLogout = false;
 let isShuttingDown = false;
+let saveCredsHandler = null;
 
 function resetRuntimeState() {
   latestQrText = null;
@@ -46,82 +45,8 @@ function resetRuntimeState() {
   authenticated = false;
 }
 
-function isProfileLockError(error) {
-  const message = String(error?.message || error || "").toLowerCase();
-  return (
-    message.includes("profile appears to be in use") ||
-    message.includes("chromium has locked the profile") ||
-    message.includes("failed to launch the browser process") ||
-    message.includes("already running")
-  );
-}
-
-function dropClientReference(reason = "client_reset") {
-  latestError = reason;
-  connectionStatus = "disconnected";
-  client = null;
-  initializingPromise = null;
-  resetRuntimeState();
-}
-
-function isRecoverableSessionError(error) {
-  const message = String(error?.message || error || "").toLowerCase();
-  return (
-    message.includes("detached frame") ||
-    message.includes("execution context was destroyed") ||
-    message.includes("cannot find context with specified id") ||
-    message.includes("target closed") ||
-    message.includes("session closed") ||
-    message.includes("protocol error")
-  );
-}
-
-async function destroyClientSilently(instance) {
-  if (!instance) return;
-  try {
-    await Promise.race([
-      instance.destroy(),
-      new Promise((resolve) => setTimeout(resolve, 8000)),
-    ]);
-  } catch (_) {}
-}
-
 function ensureSessionPath() {
   fs.mkdirSync(SESSION_PATH, { recursive: true });
-}
-
-function getSessionSearchTokens() {
-  const normalized = SESSION_PATH.replace(/\\/g, "/");
-  const authDirName = path.basename(SESSION_PATH);
-  const clientDirName = `session-${CLIENT_ID}`;
-  return [normalized, authDirName, clientDirName].filter(Boolean);
-}
-
-function killChromiumProcessesForSession() {
-  if (process.platform === "win32") return;
-
-  const tokens = getSessionSearchTokens();
-  for (const token of tokens) {
-    try {
-      execSync(`pkill -f "${token}"`, { stdio: "ignore" });
-    } catch (_) {}
-  }
-  try {
-    execSync(`pkill -f "chrome.*${CLIENT_ID}"`, { stdio: "ignore" });
-  } catch (_) {}
-  try {
-    execSync(`pkill -f "chromium.*${CLIENT_ID}"`, { stdio: "ignore" });
-  } catch (_) {}
-}
-
-function removeFileIfExists(filePath) {
-  try {
-    if (fs.existsSync(filePath)) fs.rmSync(filePath, { force: true, recursive: true });
-  } catch (_) {}
-}
-
-function getClientSessionDirectory() {
-  return path.join(SESSION_PATH, `session-${CLIENT_ID}`);
 }
 
 function removeDirectoryIfExists(dirPath) {
@@ -130,49 +55,9 @@ function removeDirectoryIfExists(dirPath) {
   } catch (_) {}
 }
 
-function clearStaleWhatsAppSession() {
-  removeDirectoryIfExists(getClientSessionDirectory());
-}
-
-function clearChromiumProfileLocks(rootDir) {
-  if (!fs.existsSync(rootDir)) return;
-
-  const lockNames = new Set([
-    "SingletonLock",
-    "SingletonCookie",
-    "SingletonSocket",
-    ".com.google.Chrome",
-  ]);
-
-  const walk = (currentDir) => {
-    let entries = [];
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch (_) {
-      return;
-    }
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        walk(fullPath);
-        continue;
-      }
-      const matchesWildcard = entry.name.startsWith(".org.chromium.Chromium.");
-      if (lockNames.has(entry.name) || matchesWildcard) {
-        removeFileIfExists(fullPath);
-      }
-    }
-  };
-
-  walk(rootDir);
-}
-
-// Deletes the entire session profile so the next reconnect forces a fresh QR scan.
-// Called when auth_failure fires or when WhatsApp signals a permanent disconnection.
-function clearExpiredSessionFiles() {
-  clearChromiumProfileLocks(SESSION_PATH);
-  clearStaleWhatsAppSession();
-  console.log(`[WhatsApp] Expired session cleared for client "${CLIENT_ID}" — next start will request a new QR scan`);
+function clearSessionFiles() {
+  removeDirectoryIfExists(SESSION_PATH);
+  console.log(`[WhatsApp] Baileys session cleared for client "${CLIENT_ID}"`);
 }
 
 function clearReconnectTimer() {
@@ -200,6 +85,7 @@ function scheduleReconnect(reason = "unknown") {
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     if (isShuttingDown || manualLogout) return;
+
     try {
       await initWhatsAppClient();
     } catch (error) {
@@ -237,94 +123,101 @@ async function buildQrImage(qrText) {
   latestQrImage = await qrcode.toDataURL(qrText);
 }
 
-function bindClientEvents(instance) {
-  instance.on("qr", async (qrText) => {
+function getDisconnectCode(lastDisconnect) {
+  return lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode || null;
+}
+
+function getDisconnectReason(lastDisconnect) {
+  const code = getDisconnectCode(lastDisconnect);
+  const message = lastDisconnect?.error?.message || lastDisconnect?.error?.toString?.() || "connection closed";
+  return code ? `${message} (${code})` : message;
+}
+
+function isLoggedOutDisconnect(lastDisconnect) {
+  return getDisconnectCode(lastDisconnect) === DisconnectReason.loggedOut;
+}
+
+async function closeSocketSilently(instance) {
+  if (!instance) return;
+  try {
+    instance.ev?.removeAllListeners?.();
+  } catch (_) {}
+  try {
+    instance.ws?.close?.();
+  } catch (_) {}
+  try {
+    instance.end?.();
+  } catch (_) {}
+}
+
+function dropSocketReference(reason = "socket_reset") {
+  latestError = reason;
+  connectionStatus = "disconnected";
+  socket = null;
+  initializingPromise = null;
+  saveCredsHandler = null;
+  resetRuntimeState();
+}
+
+async function handleConnectionUpdate(update) {
+  const { connection, lastDisconnect, qr } = update;
+
+  if (qr) {
     clearReconnectTimer();
     connectionStatus = "qr_ready";
     latestError = null;
-    connectedNumber = null;
     authenticated = false;
+    connectedNumber = null;
 
     try {
-      await buildQrImage(qrText);
+      await buildQrImage(qr);
     } catch (error) {
       latestError = `QR generation failed: ${error.message}`;
     }
-  });
+  }
 
-  instance.on("authenticated", () => {
-    clearReconnectTimer();
-    reconnectAttempts = 0;
-    authenticated = true;
-    latestError = null;
-    connectionStatus = "authenticated";
-  });
+  if (connection === "connecting") {
+    connectionStatus = latestQrImage ? "qr_ready" : "connecting";
+  }
 
-  instance.on("ready", async () => {
+  if (connection === "open") {
     clearReconnectTimer();
     reconnectAttempts = 0;
     connectionStatus = "ready";
+    authenticated = true;
     latestQrText = null;
     latestQrImage = null;
     latestError = null;
 
     try {
-      const wid = instance.info?.wid?._serialized || "";
-      connectedNumber = wid.replace("@c.us", "") || null;
+      const jid = socket?.user?.id || socket?.user?.jid || "";
+      connectedNumber = String(jid).split(":")[0].replace("@s.whatsapp.net", "") || null;
     } catch (_) {
       connectedNumber = null;
     }
-  });
+  }
 
-  // auth_failure means the saved session is rejected by WhatsApp (expired/revoked).
-  // Destroy the browser and wipe session files so the next attempt starts with a fresh QR.
-  instance.on("auth_failure", async (message) => {
-    clearReconnectTimer();
-    authenticated = false;
-    connectionStatus = "auth_failure";
-    latestError = message || "Authentication failed — session expired";
+  if (connection === "close") {
+    const reason = getDisconnectReason(lastDisconnect);
+    const shouldClearSession = CLEAR_EXPIRED_SESSION && isLoggedOutDisconnect(lastDisconnect);
+    const staleSocket = socket;
 
-    const staleClient = client;
-    client = null;
-    initializingPromise = null;
-    resetRuntimeState();
+    dropSocketReference(reason);
+    await closeSocketSilently(staleSocket);
 
-    await destroyClientSilently(staleClient);
-
-    if (CLEAR_EXPIRED_SESSION) {
-      clearExpiredSessionFiles();
+    if (shouldClearSession) {
+      clearSessionFiles();
+      connectionStatus = "auth_failure";
     }
 
-    if (!manualLogout && !isShuttingDown && AUTO_INIT) {
-      scheduleReconnect("auth_failure_session_cleared");
+    if (!manualLogout && !isShuttingDown && !shouldClearSession) {
+      scheduleReconnect(reason);
     }
-  });
-
-  // disconnected fires for temporary network drops AND for permanent logouts.
-  // For permanent reasons (NAVIGATION, CONFLICT, etc.) wipe the session so we get a fresh QR.
-  instance.on("disconnected", async (reason) => {
-    const staleClient = client;
-    dropClientReference(reason || "Client disconnected");
-
-    // Destroy the browser process before scheduling reconnect —
-    // otherwise the new browser launch fails with "already running".
-    await destroyClientSilently(staleClient);
-
-    if (CLEAR_EXPIRED_SESSION && EXPIRED_SESSION_REASONS.has(reason)) {
-      clearExpiredSessionFiles();
-    } else {
-      // Always remove lock files even for temporary disconnects
-      clearChromiumProfileLocks(SESSION_PATH);
-    }
-
-    if (!manualLogout && !isShuttingDown) {
-      scheduleReconnect(reason || "Client disconnected");
-    }
-  });
+  }
 }
 
 async function initWhatsAppClient() {
-  if (client) return getStatus();
+  if (socket) return getStatus();
 
   if (initializingPromise) {
     await initializingPromise;
@@ -337,108 +230,61 @@ async function initWhatsAppClient() {
   clearReconnectTimer();
   ensureSessionPath();
 
-  // Kill stale processes and remove lock files before every browser launch
-  killChromiumProcessesForSession();
-  clearChromiumProfileLocks(SESSION_PATH);
+  initializingPromise = (async () => {
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
+    const { version } = await fetchLatestBaileysVersion();
 
-  const buildClient = () =>
-    new Client({
-      authStrategy: new LocalAuth({
-        clientId: CLIENT_ID,
-        dataPath: SESSION_PATH,
-      }),
-      puppeteer: {
-        headless: true,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-accelerated-2d-canvas",
-          "--no-first-run",
-          "--no-zygote",
-          "--disable-gpu",
-        ],
+    saveCredsHandler = saveCreds;
+    socket = makeWASocket({
+      version,
+      logger,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
+      browser: [CLIENT_ID, "Chrome", "1.0.0"],
+      markOnlineOnConnect: false,
+      printQRInTerminal: false,
+      syncFullHistory: false,
+      getMessage: async () => undefined,
     });
 
-  client = buildClient();
-  bindClientEvents(client);
-
-  initializingPromise = client
-    .initialize()
+    socket.ev.on("creds.update", saveCredsHandler);
+    socket.ev.on("connection.update", handleConnectionUpdate);
+  })()
     .catch(async (error) => {
-      if (isProfileLockError(error)) {
-        killChromiumProcessesForSession();
-        clearChromiumProfileLocks(SESSION_PATH);
-        clearStaleWhatsAppSession();
-      }
-      latestError = error.message;
+      latestError = error.message || String(error);
       connectionStatus = "failed";
 
-      const failedClient = client;
-      client = null;
-      await destroyClientSilently(failedClient);
+      const failedSocket = socket;
+      socket = null;
+      saveCredsHandler = null;
+      await closeSocketSilently(failedSocket);
 
       if (!manualLogout && !isShuttingDown) {
-        scheduleReconnect(error.message);
+        scheduleReconnect(latestError);
       }
+
       throw error;
     })
     .finally(() => {
       initializingPromise = null;
     });
 
-  try {
-    await initializingPromise;
-  } catch (error) {
-    // If a profile lock error, retry once after cleanup
-    if (!isProfileLockError(error)) throw error;
-
-    killChromiumProcessesForSession();
-    clearChromiumProfileLocks(SESSION_PATH);
-    clearStaleWhatsAppSession();
-    connectionStatus = "initializing";
-    latestError = "Retrying after clearing Chromium locks and stale session";
-
-    client = buildClient();
-    bindClientEvents(client);
-
-    initializingPromise = client
-      .initialize()
-      .catch(async (retryError) => {
-        latestError = retryError.message;
-        connectionStatus = "failed";
-
-        const failedClient = client;
-        client = null;
-        await destroyClientSilently(failedClient);
-
-        if (!manualLogout && !isShuttingDown) {
-          scheduleReconnect(retryError.message);
-        }
-        throw retryError;
-      })
-      .finally(() => {
-        initializingPromise = null;
-      });
-
-    await initializingPromise;
-  }
-
+  await initializingPromise;
   return getStatus();
 }
 
 async function recoverClientFromRuntimeError(error) {
-  const failingClient = client;
+  const failingSocket = socket;
   clearReconnectTimer();
-  dropClientReference(error?.message || "recoverable_runtime_error");
-  await destroyClientSilently(failingClient);
-  clearChromiumProfileLocks(SESSION_PATH);
+  dropSocketReference(error?.message || "recoverable_runtime_error");
+  await closeSocketSilently(failingSocket);
   return initWhatsAppClient();
 }
 
 function ensureClientReady() {
-  if (!client || connectionStatus !== "ready") {
+  if (!socket || connectionStatus !== "ready") {
     throw new Error("WhatsApp client is not ready. Scan QR and wait until status becomes ready.");
   }
 }
@@ -455,23 +301,19 @@ async function logoutWhatsApp() {
   manualLogout = true;
   clearReconnectTimer();
 
-  if (!client) {
-    connectionStatus = "idle";
-    resetRuntimeState();
-    return { success: true, status: connectionStatus };
+  const activeSocket = socket;
+  socket = null;
+  initializingPromise = null;
+  saveCredsHandler = null;
+
+  if (activeSocket) {
+    try {
+      await activeSocket.logout();
+    } catch (_) {}
+    await closeSocketSilently(activeSocket);
   }
 
-  const activeClient = client;
-  client = null;
-  initializingPromise = null;
-
-  try {
-    await activeClient.logout();
-  } catch (_) {}
-
-  await destroyClientSilently(activeClient);
-  clearChromiumProfileLocks(SESSION_PATH);
-  clearStaleWhatsAppSession();
+  clearSessionFiles();
 
   latestError = null;
   connectionStatus = "idle";
@@ -485,10 +327,11 @@ async function gracefulShutdown() {
   isShuttingDown = true;
   clearReconnectTimer();
 
-  const activeClient = client;
-  client = null;
+  const activeSocket = socket;
+  socket = null;
+  saveCredsHandler = null;
 
-  await destroyClientSilently(activeClient);
+  await closeSocketSilently(activeSocket);
 }
 
 process.once("SIGTERM", async () => {
@@ -503,10 +346,6 @@ process.once("SIGINT", async () => {
 
 function startWhatsAppAutoInit() {
   if (!AUTO_INIT) return;
-
-  // Remove stale lock files before the very first launch
-  killChromiumProcessesForSession();
-  clearChromiumProfileLocks(SESSION_PATH);
   scheduleReconnect("server_boot");
 }
 
@@ -514,13 +353,25 @@ async function resolveChatId(phone) {
   ensureClientReady();
 
   const normalizedPhone = normalizeWhatsAppPhone(phone);
-  const numberId = await client.getNumberId(normalizedPhone);
+  const chatId = `${normalizedPhone}@s.whatsapp.net`;
+  const exists = await socket.onWhatsApp(normalizedPhone);
 
-  if (!numberId?._serialized) {
+  if (!exists?.[0]?.exists) {
     throw new Error("This number does not appear to have WhatsApp");
   }
 
-  return { phone: normalizedPhone, chatId: numberId._serialized };
+  return { phone: normalizedPhone, chatId };
+}
+
+function isRecoverableSessionError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("connection closed") ||
+    message.includes("timed out") ||
+    message.includes("socket") ||
+    message.includes("stream errored") ||
+    message.includes("not open")
+  );
 }
 
 async function sendWhatsAppText(phone, message) {
@@ -530,12 +381,12 @@ async function sendWhatsAppText(phone, message) {
 
   try {
     const { phone: normalizedPhone, chatId } = await resolveChatId(phone);
-    const sentMessage = await client.sendMessage(chatId, String(message).trim());
+    const sentMessage = await socket.sendMessage(chatId, { text: String(message).trim() });
 
     return {
       to: normalizedPhone,
-      messageId: sentMessage?.id?._serialized || null,
-      timestamp: sentMessage?.timestamp || null,
+      messageId: sentMessage?.key?.id || null,
+      timestamp: sentMessage?.messageTimestamp || null,
       status: "sent",
     };
   } catch (error) {
@@ -545,12 +396,12 @@ async function sendWhatsAppText(phone, message) {
     await recoverClientFromRuntimeError(error);
 
     const { phone: normalizedPhone, chatId } = await resolveChatId(phone);
-    const sentMessage = await client.sendMessage(chatId, String(message).trim());
+    const sentMessage = await socket.sendMessage(chatId, { text: String(message).trim() });
 
     return {
       to: normalizedPhone,
-      messageId: sentMessage?.id?._serialized || null,
-      timestamp: sentMessage?.timestamp || null,
+      messageId: sentMessage?.key?.id || null,
+      timestamp: sentMessage?.messageTimestamp || null,
       status: "sent_after_recovery",
     };
   }
