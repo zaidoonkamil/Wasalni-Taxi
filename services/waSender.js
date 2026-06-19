@@ -19,6 +19,7 @@ const AUTO_INIT = process.env.WHATSAPP_AUTO_INIT !== "false";
 const RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_DELAY_MS || 15000);
 const MAX_RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_MAX_RECONNECT_DELAY_MS || 120000);
 const READY_WAIT_TIMEOUT_MS = Number(process.env.WHATSAPP_READY_WAIT_TIMEOUT_MS || 20000);
+const VERIFY_NUMBER_EXISTS = process.env.WHATSAPP_VERIFY_NUMBER === "true";
 
 let socket = null;
 let authState = null;
@@ -363,15 +364,23 @@ async function resolveChatId(phone) {
 
   const normalizedPhone = normalizeWhatsAppPhone(phone);
   const jid = `${normalizedPhone}@s.whatsapp.net`;
-  const exists = await socket.onWhatsApp(jid);
 
-  if (!exists?.[0]?.exists) {
-    throw new Error("This number does not appear to have WhatsApp");
+  if (VERIFY_NUMBER_EXISTS) {
+    const exists = await socket.onWhatsApp(jid);
+
+    if (!exists?.[0]?.exists) {
+      throw new Error("This number does not appear to have WhatsApp");
+    }
+
+    return {
+      phone: normalizedPhone,
+      chatId: exists[0].jid || jid,
+    };
   }
 
   return {
     phone: normalizedPhone,
-    chatId: exists[0].jid || jid,
+    chatId: jid,
   };
 }
 
