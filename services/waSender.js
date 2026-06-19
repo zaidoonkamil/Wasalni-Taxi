@@ -5,6 +5,7 @@ const P = require("pino");
 const {
   DisconnectReason,
   Browsers,
+  WAMessageStatus,
   default: makeWASocket,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
@@ -34,6 +35,13 @@ let connectedNumber = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let manualLogout = false;
+let latestNewChatCap = null;
+let latestReachoutTimeLock = null;
+
+const pendingMessages = new Map();
+const MESSAGE_STATUS_NAMES = Object.fromEntries(
+  Object.entries(WAMessageStatus).map(([name, value]) => [value, name])
+);
 
 function ensureSessionPath() {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -124,6 +132,8 @@ function getStatus() {
     hasQr: Boolean(latestQrImage),
     connectedNumber,
     lastError: latestError,
+    newChatCap: latestNewChatCap,
+    reachoutTimeLock: latestReachoutTimeLock,
   };
 }
 
@@ -155,8 +165,66 @@ async function buildQrImage(qrText) {
   latestQrImage = await qrcode.toDataURL(qrText);
 }
 
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (_) {
+    return String(value);
+  }
+}
+
+async function refreshWhatsAppSendLimits(instance) {
+  try {
+    latestNewChatCap = await instance.fetchNewChatMessageCap?.();
+    if (latestNewChatCap) {
+      console.info(`WhatsApp new chat cap: ${safeJson(latestNewChatCap)}`);
+    }
+  } catch (error) {
+    console.warn(`WhatsApp new chat cap check failed: ${error.message || error}`);
+  }
+
+  try {
+    latestReachoutTimeLock = await instance.fetchAccountReachoutTimelock?.();
+    if (latestReachoutTimeLock) {
+      console.info(`WhatsApp reachout timelock: ${safeJson(latestReachoutTimeLock)}`);
+    }
+  } catch (error) {
+    console.warn(`WhatsApp reachout timelock check failed: ${error.message || error}`);
+  }
+}
+
 function bindSocketEvents(instance) {
   instance.ev.on("creds.update", saveCreds);
+
+  instance.ev.on("messages.update", (updates) => {
+    for (const update of updates || []) {
+      const messageId = update?.key?.id;
+      if (!messageId) continue;
+
+      const meta = pendingMessages.get(messageId);
+      if (!meta) continue;
+
+      const status = update.update?.status;
+      const statusName = MESSAGE_STATUS_NAMES[status] || status || "unknown";
+      const error = update.update?.error || update.update?.messageStubParameters;
+      const line = `WhatsApp message update for ${meta.phone} via ${meta.chatId}: ${messageId} status=${statusName}`;
+
+      if (error || status === WAMessageStatus.ERROR) {
+        console.warn(`${line} error=${safeJson(error || update.update)}`);
+      } else {
+        console.info(line);
+      }
+
+      if (
+        status === WAMessageStatus.ERROR ||
+        status === WAMessageStatus.DELIVERY_ACK ||
+        status === WAMessageStatus.READ ||
+        status === WAMessageStatus.PLAYED
+      ) {
+        pendingMessages.delete(messageId);
+      }
+    }
+  });
 
   instance.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -194,6 +262,8 @@ function bindSocketEvents(instance) {
       } catch (_) {
         connectedNumber = null;
       }
+
+      refreshWhatsAppSendLimits(instance);
     }
 
     if (connection === "close") {
@@ -379,6 +449,7 @@ async function getOnWhatsAppJids(normalizedPhone, directJid) {
       for (const item of result || []) {
         if (item?.exists) {
           addUniqueChatId(found, item.jid || directJid);
+          addUniqueChatId(found, item.lid);
         }
       }
     } catch (_) {}
@@ -392,16 +463,18 @@ async function resolveChatIds(phone) {
 
   const normalizedPhone = normalizeWhatsAppPhone(phone);
   const directJid = `${normalizedPhone}@s.whatsapp.net`;
-  const chatIds = [directJid];
+  const chatIds = [];
   const checkedJids = await getOnWhatsAppJids(normalizedPhone, directJid);
 
   for (const jid of checkedJids) {
     addUniqueChatId(chatIds, jid);
   }
 
-  if (VERIFY_NUMBER_EXISTS && checkedJids.length === 0) {
+  if (VERIFY_NUMBER_EXISTS && chatIds.length === 0) {
     throw new Error("This number does not appear to have WhatsApp");
   }
+
+  addUniqueChatId(chatIds, directJid);
 
   return {
     phone: normalizedPhone,
@@ -422,13 +495,25 @@ async function sendWhatsAppText(phone, message) {
       const sentMessage = await socket.sendMessage(chatId, {
         text: String(message).trim(),
       });
+      const messageId = sentMessage?.key?.id || null;
+      const status = chatId === chatIds[0] ? "sent" : "sent_after_jid_fallback";
+
+      if (messageId) {
+        pendingMessages.set(messageId, {
+          phone: normalizedPhone,
+          chatId,
+          createdAt: Date.now(),
+        });
+      }
+
+      console.info(`WhatsApp send success for ${normalizedPhone} via ${chatId}: ${messageId || "no_message_id"}`);
 
       return {
         to: normalizedPhone,
         chatId,
-        messageId: sentMessage?.key?.id || null,
+        messageId,
         timestamp: sentMessage?.messageTimestamp || null,
-        status: chatId === chatIds[0] ? "sent" : "sent_after_jid_fallback",
+        status,
       };
     } catch (error) {
       lastError = error;

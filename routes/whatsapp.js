@@ -92,6 +92,7 @@ router.post("/whatsapp/send", requireAdmin, upload.none(), async (req, res) => {
       success: true,
       phone: result.to,
       user_id: user ? user.id : null,
+      chatId: result.chatId,
       messageId: result.messageId,
       timestamp: result.timestamp,
       status: result.status,
@@ -142,8 +143,10 @@ router.post("/whatsapp/send-bulk", requireAdmin, upload.none(), async (req, res)
           success: true,
           phone: target.phone,
           user_id: target.user_id,
+          chatId: sendResult.chatId,
           messageId: sendResult.messageId,
           timestamp: sendResult.timestamp,
+          status: sendResult.status,
         });
       } catch (error) {
         results.push({
