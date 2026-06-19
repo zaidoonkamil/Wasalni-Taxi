@@ -359,28 +359,53 @@ function startWhatsAppAutoInit() {
   scheduleReconnect("server_boot");
 }
 
-async function resolveChatId(phone) {
+function getErrorMessage(error) {
+  return error?.message || error?.output?.payload?.message || String(error);
+}
+
+function addUniqueChatId(list, jid) {
+  if (!jid || list.includes(jid)) return;
+  list.push(jid);
+}
+
+async function getOnWhatsAppJids(normalizedPhone, directJid) {
+  const found = [];
+  const queries = [directJid, normalizedPhone];
+
+  for (const query of queries) {
+    try {
+      const result = await socket.onWhatsApp(query);
+
+      for (const item of result || []) {
+        if (item?.exists) {
+          addUniqueChatId(found, item.jid || directJid);
+        }
+      }
+    } catch (_) {}
+  }
+
+  return found;
+}
+
+async function resolveChatIds(phone) {
   await ensureClientReady();
 
   const normalizedPhone = normalizeWhatsAppPhone(phone);
-  const jid = `${normalizedPhone}@s.whatsapp.net`;
+  const directJid = `${normalizedPhone}@s.whatsapp.net`;
+  const chatIds = [directJid];
+  const checkedJids = await getOnWhatsAppJids(normalizedPhone, directJid);
 
-  if (VERIFY_NUMBER_EXISTS) {
-    const exists = await socket.onWhatsApp(jid);
+  for (const jid of checkedJids) {
+    addUniqueChatId(chatIds, jid);
+  }
 
-    if (!exists?.[0]?.exists) {
-      throw new Error("This number does not appear to have WhatsApp");
-    }
-
-    return {
-      phone: normalizedPhone,
-      chatId: exists[0].jid || jid,
-    };
+  if (VERIFY_NUMBER_EXISTS && checkedJids.length === 0) {
+    throw new Error("This number does not appear to have WhatsApp");
   }
 
   return {
     phone: normalizedPhone,
-    chatId: jid,
+    chatIds,
   };
 }
 
@@ -389,17 +414,30 @@ async function sendWhatsAppText(phone, message) {
     throw new Error("Message is required");
   }
 
-  const { phone: normalizedPhone, chatId } = await resolveChatId(phone);
-  const sentMessage = await socket.sendMessage(chatId, {
-    text: String(message).trim(),
-  });
+  const { phone: normalizedPhone, chatIds } = await resolveChatIds(phone);
+  let lastError = null;
 
-  return {
-    to: normalizedPhone,
-    messageId: sentMessage?.key?.id || null,
-    timestamp: sentMessage?.messageTimestamp || null,
-    status: "sent",
-  };
+  for (const chatId of chatIds) {
+    try {
+      const sentMessage = await socket.sendMessage(chatId, {
+        text: String(message).trim(),
+      });
+
+      return {
+        to: normalizedPhone,
+        chatId,
+        messageId: sentMessage?.key?.id || null,
+        timestamp: sentMessage?.messageTimestamp || null,
+        status: chatId === chatIds[0] ? "sent" : "sent_after_jid_fallback",
+      };
+    } catch (error) {
+      lastError = error;
+      latestError = `WhatsApp send failed for ${normalizedPhone} via ${chatId}: ${getErrorMessage(error)}`;
+      console.warn(latestError);
+    }
+  }
+
+  throw new Error(`WhatsApp send failed for ${normalizedPhone}: ${getErrorMessage(lastError)}`);
 }
 
 module.exports = {
