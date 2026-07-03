@@ -19,7 +19,7 @@ const AUTO_INIT = process.env.WHATSAPP_AUTO_INIT !== "false";
 const RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_DELAY_MS || 15000);
 const MAX_RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_MAX_RECONNECT_DELAY_MS || 120000);
 const READY_WAIT_TIMEOUT_MS = Number(process.env.WHATSAPP_READY_WAIT_TIMEOUT_MS || 20000);
-const SEND_COOLDOWN_MS = Number(process.env.WHATSAPP_SEND_COOLDOWN_MS || 12000);
+const SEND_COOLDOWN_MS = Number(process.env.WHATSAPP_SEND_COOLDOWN_MS || 3000);
 
 let socket = null;
 let authState = null;
@@ -369,7 +369,7 @@ function wait(ms) {
 }
 
 async function waitForSendCooldown() {
-  if (!SEND_COOLDOWN_MS) return;
+  if (!SEND_COOLDOWN_MS || !lastSendAt) return;
 
   const elapsed = Date.now() - lastSendAt;
   if (elapsed < SEND_COOLDOWN_MS) {
