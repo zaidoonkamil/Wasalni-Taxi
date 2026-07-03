@@ -5,7 +5,6 @@ const P = require("pino");
 const {
   DisconnectReason,
   Browsers,
-  WAMessageStatus,
   default: makeWASocket,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
@@ -20,7 +19,7 @@ const AUTO_INIT = process.env.WHATSAPP_AUTO_INIT !== "false";
 const RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_DELAY_MS || 15000);
 const MAX_RECONNECT_DELAY_MS = Number(process.env.WHATSAPP_MAX_RECONNECT_DELAY_MS || 120000);
 const READY_WAIT_TIMEOUT_MS = Number(process.env.WHATSAPP_READY_WAIT_TIMEOUT_MS || 20000);
-const VERIFY_NUMBER_EXISTS = process.env.WHATSAPP_VERIFY_NUMBER === "true";
+const SEND_COOLDOWN_MS = Number(process.env.WHATSAPP_SEND_COOLDOWN_MS || 12000);
 
 let socket = null;
 let authState = null;
@@ -35,13 +34,7 @@ let connectedNumber = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let manualLogout = false;
-let latestNewChatCap = null;
-let latestReachoutTimeLock = null;
-
-const pendingMessages = new Map();
-const MESSAGE_STATUS_NAMES = Object.fromEntries(
-  Object.entries(WAMessageStatus).map(([name, value]) => [value, name])
-);
+let lastSendAt = 0;
 
 function ensureSessionPath() {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -132,8 +125,6 @@ function getStatus() {
     hasQr: Boolean(latestQrImage),
     connectedNumber,
     lastError: latestError,
-    newChatCap: latestNewChatCap,
-    reachoutTimeLock: latestReachoutTimeLock,
   };
 }
 
@@ -165,66 +156,8 @@ async function buildQrImage(qrText) {
   latestQrImage = await qrcode.toDataURL(qrText);
 }
 
-function safeJson(value) {
-  try {
-    return JSON.stringify(value);
-  } catch (_) {
-    return String(value);
-  }
-}
-
-async function refreshWhatsAppSendLimits(instance) {
-  try {
-    latestNewChatCap = await instance.fetchNewChatMessageCap?.();
-    if (latestNewChatCap) {
-      console.info(`WhatsApp new chat cap: ${safeJson(latestNewChatCap)}`);
-    }
-  } catch (error) {
-    console.warn(`WhatsApp new chat cap check failed: ${error.message || error}`);
-  }
-
-  try {
-    latestReachoutTimeLock = await instance.fetchAccountReachoutTimelock?.();
-    if (latestReachoutTimeLock) {
-      console.info(`WhatsApp reachout timelock: ${safeJson(latestReachoutTimeLock)}`);
-    }
-  } catch (error) {
-    console.warn(`WhatsApp reachout timelock check failed: ${error.message || error}`);
-  }
-}
-
 function bindSocketEvents(instance) {
   instance.ev.on("creds.update", saveCreds);
-
-  instance.ev.on("messages.update", (updates) => {
-    for (const update of updates || []) {
-      const messageId = update?.key?.id;
-      if (!messageId) continue;
-
-      const meta = pendingMessages.get(messageId);
-      if (!meta) continue;
-
-      const status = update.update?.status;
-      const statusName = MESSAGE_STATUS_NAMES[status] || status || "unknown";
-      const error = update.update?.error || update.update?.messageStubParameters;
-      const line = `WhatsApp message update for ${meta.phone} via ${meta.chatId}: ${messageId} status=${statusName}`;
-
-      if (error || status === WAMessageStatus.ERROR) {
-        console.warn(`${line} error=${safeJson(error || update.update)}`);
-      } else {
-        console.info(line);
-      }
-
-      if (
-        status === WAMessageStatus.ERROR ||
-        status === WAMessageStatus.DELIVERY_ACK ||
-        status === WAMessageStatus.READ ||
-        status === WAMessageStatus.PLAYED
-      ) {
-        pendingMessages.delete(messageId);
-      }
-    }
-  });
 
   instance.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -262,8 +195,6 @@ function bindSocketEvents(instance) {
       } catch (_) {
         connectedNumber = null;
       }
-
-      refreshWhatsAppSendLimits(instance);
     }
 
     if (connection === "close") {
@@ -433,52 +364,34 @@ function getErrorMessage(error) {
   return error?.message || error?.output?.payload?.message || String(error);
 }
 
-function addUniqueChatId(list, jid) {
-  if (!jid || list.includes(jid)) return;
-  list.push(jid);
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function getOnWhatsAppJids(normalizedPhone, directJid) {
-  const found = [];
-  const queries = [directJid, normalizedPhone];
+async function waitForSendCooldown() {
+  if (!SEND_COOLDOWN_MS) return;
 
-  for (const query of queries) {
-    try {
-      const result = await socket.onWhatsApp(query);
-
-      for (const item of result || []) {
-        if (item?.exists) {
-          addUniqueChatId(found, item.jid || directJid);
-          addUniqueChatId(found, item.lid);
-        }
-      }
-    } catch (_) {}
+  const elapsed = Date.now() - lastSendAt;
+  if (elapsed < SEND_COOLDOWN_MS) {
+    await wait(SEND_COOLDOWN_MS - elapsed);
   }
-
-  return found;
 }
 
-async function resolveChatIds(phone) {
+async function resolveChatId(phone) {
   await ensureClientReady();
 
   const normalizedPhone = normalizeWhatsAppPhone(phone);
   const directJid = `${normalizedPhone}@s.whatsapp.net`;
-  const chatIds = [];
-  const checkedJids = await getOnWhatsAppJids(normalizedPhone, directJid);
+  const result = await socket.onWhatsApp(normalizedPhone);
+  const match = (result || []).find((item) => item?.exists);
 
-  for (const jid of checkedJids) {
-    addUniqueChatId(chatIds, jid);
-  }
-
-  if (VERIFY_NUMBER_EXISTS && chatIds.length === 0) {
+  if (!match) {
     throw new Error("This number does not appear to have WhatsApp");
   }
 
-  addUniqueChatId(chatIds, directJid);
-
   return {
     phone: normalizedPhone,
-    chatIds,
+    chatId: match.jid || directJid,
   };
 }
 
@@ -487,42 +400,31 @@ async function sendWhatsAppText(phone, message) {
     throw new Error("Message is required");
   }
 
-  const { phone: normalizedPhone, chatIds } = await resolveChatIds(phone);
-  let lastError = null;
+  const { phone: normalizedPhone, chatId } = await resolveChatId(phone);
 
-  for (const chatId of chatIds) {
-    try {
-      const sentMessage = await socket.sendMessage(chatId, {
-        text: String(message).trim(),
-      });
-      const messageId = sentMessage?.key?.id || null;
-      const status = chatId === chatIds[0] ? "sent" : "sent_after_jid_fallback";
+  try {
+    await waitForSendCooldown();
 
-      if (messageId) {
-        pendingMessages.set(messageId, {
-          phone: normalizedPhone,
-          chatId,
-          createdAt: Date.now(),
-        });
-      }
+    const sentMessage = await socket.sendMessage(chatId, {
+      text: String(message).trim(),
+    });
 
-      console.info(`WhatsApp send success for ${normalizedPhone} via ${chatId}: ${messageId || "no_message_id"}`);
+    lastSendAt = Date.now();
+    const messageId = sentMessage?.key?.id || null;
+    console.info(`WhatsApp send success for ${normalizedPhone} via ${chatId}: ${messageId || "no_message_id"}`);
 
-      return {
-        to: normalizedPhone,
-        chatId,
-        messageId,
-        timestamp: sentMessage?.messageTimestamp || null,
-        status,
-      };
-    } catch (error) {
-      lastError = error;
-      latestError = `WhatsApp send failed for ${normalizedPhone} via ${chatId}: ${getErrorMessage(error)}`;
-      console.warn(latestError);
-    }
+    return {
+      to: normalizedPhone,
+      chatId,
+      messageId,
+      timestamp: sentMessage?.messageTimestamp || null,
+      status: "sent",
+    };
+  } catch (error) {
+    latestError = `WhatsApp send failed for ${normalizedPhone} via ${chatId}: ${getErrorMessage(error)}`;
+    console.warn(latestError);
+    throw error;
   }
-
-  throw new Error(`WhatsApp send failed for ${normalizedPhone}: ${getErrorMessage(lastError)}`);
 }
 
 module.exports = {

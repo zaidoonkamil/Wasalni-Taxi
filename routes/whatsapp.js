@@ -13,6 +13,7 @@ const {
 
 const router = express.Router();
 const upload = multer();
+const ENABLE_BULK_SEND = process.env.WHATSAPP_ENABLE_BULK_SEND === "true";
 
 function parseList(value) {
   if (Array.isArray(value)) return value;
@@ -105,6 +106,12 @@ router.post("/whatsapp/send", requireAdmin, upload.none(), async (req, res) => {
 
 router.post("/whatsapp/send-bulk", requireAdmin, upload.none(), async (req, res) => {
   try {
+    if (!ENABLE_BULK_SEND) {
+      return res.status(403).json({
+        error: "WhatsApp bulk sending is disabled to protect the connected number.",
+      });
+    }
+
     const { message } = req.body;
     const phones = parseList(req.body.phones);
     const userIds = parseList(req.body.user_ids);
