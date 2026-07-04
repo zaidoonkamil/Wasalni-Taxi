@@ -5,6 +5,7 @@ const P = require("pino");
 const {
   DisconnectReason,
   Browsers,
+  WAMessageStatus,
   default: makeWASocket,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
@@ -35,6 +36,10 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 let manualLogout = false;
 let lastSendAt = 0;
+const pendingMessages = new Map();
+const MESSAGE_STATUS_NAMES = Object.fromEntries(
+  Object.entries(WAMessageStatus).map(([name, value]) => [value, name])
+);
 
 function ensureSessionPath() {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -158,6 +163,29 @@ async function buildQrImage(qrText) {
 
 function bindSocketEvents(instance) {
   instance.ev.on("creds.update", saveCreds);
+
+  instance.ev.on("messages.update", (updates) => {
+    for (const update of updates || []) {
+      const messageId = update?.key?.id;
+      if (!messageId) continue;
+
+      const meta = pendingMessages.get(messageId);
+      if (!meta) continue;
+
+      const status = update.update?.status;
+      const statusName = MESSAGE_STATUS_NAMES[status] || status || "unknown";
+      console.info(`WhatsApp delivery update for ${meta.phone} via ${meta.chatId}: ${messageId} status=${statusName}`);
+
+      if (
+        status === WAMessageStatus.ERROR ||
+        status === WAMessageStatus.DELIVERY_ACK ||
+        status === WAMessageStatus.READ ||
+        status === WAMessageStatus.PLAYED
+      ) {
+        pendingMessages.delete(messageId);
+      }
+    }
+  });
 
   instance.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -411,6 +439,13 @@ async function sendWhatsAppText(phone, message) {
 
     lastSendAt = Date.now();
     const messageId = sentMessage?.key?.id || null;
+    if (messageId) {
+      pendingMessages.set(messageId, {
+        phone: normalizedPhone,
+        chatId,
+        createdAt: lastSendAt,
+      });
+    }
     console.info(`WhatsApp send success for ${normalizedPhone} via ${chatId}: ${messageId || "no_message_id"}`);
 
     return {
