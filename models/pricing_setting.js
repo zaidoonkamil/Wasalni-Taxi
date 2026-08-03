@@ -5,6 +5,11 @@ const PricingSetting = sequelize.define(
   "PricingSetting",
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    serviceType: {
+      type: DataTypes.ENUM("ordinary", "super"),
+      allowNull: false,
+      defaultValue: "ordinary",
+    },
     baseFare: { type: DataTypes.DECIMAL(10, 2), allowNull: false, defaultValue: 0 },
     pricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: false, defaultValue: 0 },
     pricePerMinute: { type: DataTypes.DECIMAL(10, 3), allowNull: true, defaultValue: null },

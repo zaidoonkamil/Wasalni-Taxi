@@ -13,6 +13,46 @@ const getSetting = async (key) => {
   return s ? s.value : null;
 };
 
+const applyDriverDebtPayment = async ({ driver, amount, note, adminId, transaction }) => {
+  const prev = parseFloat(driver.driverDebt || 0);
+  let next = prev - amount;
+  if (next < 0) next = 0;
+  driver.driverDebt = next;
+
+  await DriverDebtLedger.create(
+    {
+      driver_id: driver.id,
+      type: "payment",
+      amount,
+      note: note || "admin payment",
+      admin_id: adminId,
+    },
+    { transaction }
+  );
+
+  const limitVal = driver.driverDebtLimitOverride != null
+    ? parseFloat(driver.driverDebtLimitOverride)
+    : parseFloat((await getSettingValue("DRIVER_DEBT_LIMIT")) || 0);
+  if (driver.isDebtBlocked && next < limitVal) {
+    driver.isDebtBlocked = false;
+    driver.blockReason = null;
+  }
+
+  await driver.save({ transaction });
+  return driver;
+};
+
+const notifyDriverDebtUpdated = async (driver, amount) => {
+  try {
+    const sid = await redisService.client().get(`socket:driver:${driver.id}`);
+    if (sid && socketService) {
+      socketService.notifyDriverSocket(driver.id, "driver:debt_updated", { debt: driver.driverDebt });
+    } else {
+      await notifications.sendNotificationToUser(driver.id, `تم سداد جزء من مديونيتك: ${amount}`);
+    }
+  } catch (e) {}
+};
+
 // GET settings
 router.get("/admin/debt/settings", async (req, res) => {
   try {
@@ -80,36 +120,80 @@ router.post("/admin/drivers/:id/debt/pay", requireAdmin, async (req, res) => {
     const driver = await User.findByPk(driverId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!driver) { await t.rollback(); return res.status(404).json({ error: "not_found" }); }
 
-    const prev = parseFloat(driver.driverDebt || 0);
-    let next = prev - parsed;
-    if (next < 0) next = 0;
-    driver.driverDebt = next;
-
-    await DriverDebtLedger.create({ driver_id: driver.id, type: "payment", amount: parsed, note: note || "admin payment", admin_id: req.user.id }, { transaction: t });
-
-    // check limit and unblock if needed
-    const limitVal = driver.driverDebtLimitOverride != null ? parseFloat(driver.driverDebtLimitOverride) : parseFloat((await getSettingValue("DRIVER_DEBT_LIMIT")) || 0);
-    if (driver.isDebtBlocked && next < limitVal) {
-      driver.isDebtBlocked = false;
-      driver.blockReason = null;
-    }
+    await applyDriverDebtPayment({
+      driver,
+      amount: parsed,
+      note,
+      adminId: req.user.id,
+      transaction: t,
+    });
 
     if (!driver.isDebtBlocked) {
       try { await redisService.client().sRem("drivers:debt_blocked", String(driver.id)); } catch (e) {}
     }
 
-    await driver.save({ transaction: t });
     await t.commit();
 
-    // notify driver
-    try {
-      const sid = await redisService.client().get(`socket:driver:${driver.id}`);
-      if (sid && socketService) socketService.notifyDriverSocket(driver.id, "driver:debt_updated", { debt: driver.driverDebt });
-      else await notifications.sendNotificationToUser(driver.id, `تم سداد جزء من مديونيتك: ${parsed}`);
-    } catch (e) {}
+    await notifyDriverDebtUpdated(driver, parsed);
 
     res.json({ success: true, driver });
   } catch (e) { await t.rollback(); console.error(e.message); res.status(500).json({ error: e.message }); }
+});
+
+// POST pay debt for selected drivers or all drivers
+router.post("/admin/drivers/debt/pay-bulk", requireAdmin, async (req, res) => {
+  const t = await User.sequelize.transaction();
+  try {
+    const { amount, note, driverIds, allDrivers } = req.body;
+    const parsed = parseFloat(amount || 0);
+    if (isNaN(parsed) || parsed <= 0) {
+      await t.rollback();
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    let where = { role: "driver" };
+    if (!allDrivers) {
+      const ids = Array.isArray(driverIds)
+        ? driverIds.map((id) => parseInt(id, 10)).filter((id) => Number.isInteger(id))
+        : [];
+      if (ids.length === 0) {
+        await t.rollback();
+        return res.status(400).json({ error: "driverIds required" });
+      }
+      where.id = { [Op.in]: ids };
+    }
+
+    const drivers = await User.findAll({
+      where,
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    for (const driver of drivers) {
+      await applyDriverDebtPayment({
+        driver,
+        amount: parsed,
+        note: note || (allDrivers ? "admin payment for all drivers" : "admin payment for selected drivers"),
+        adminId: req.user.id,
+        transaction: t,
+      });
+    }
+
+    await t.commit();
+
+    for (const driver of drivers) {
+      if (!driver.isDebtBlocked) {
+        try { await redisService.client().sRem("drivers:debt_blocked", String(driver.id)); } catch (e) {}
+      }
+      await notifyDriverDebtUpdated(driver, parsed);
+    }
+
+    res.json({ success: true, affected: drivers.length, drivers });
+  } catch (e) {
+    await t.rollback();
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 const getSettingValue = async (key) => {

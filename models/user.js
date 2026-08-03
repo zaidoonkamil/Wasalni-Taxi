@@ -57,6 +57,11 @@ const User = sequelize.define("User",{
       allowNull: true,
       defaultValue: null,
     },
+    vehicleCategory: {
+      type: DataTypes.ENUM("ordinary", "super"),
+      allowNull: false,
+      defaultValue: "ordinary",
+    },
     location: {
       type: DataTypes.TEXT,
       allowNull: true,

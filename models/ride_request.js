@@ -29,6 +29,11 @@ const RideRequest = sequelize.define(
     dropoffLat: { type: DataTypes.DECIMAL(10, 7), allowNull: false },
     dropoffLng: { type: DataTypes.DECIMAL(10, 7), allowNull: false },
     dropoffAddress: { type: DataTypes.STRING, allowNull: true },
+    serviceType: {
+      type: DataTypes.ENUM("ordinary", "super"),
+      allowNull: false,
+      defaultValue: "ordinary",
+    },
     priceEstimate: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
     estimatedFare: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
     distanceKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },

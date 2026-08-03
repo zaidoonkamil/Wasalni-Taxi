@@ -7,22 +7,43 @@ const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
 
+const driverCanReceiveService = (driverCategory, serviceType) => {
+  const category = driverCategory === "super" ? "super" : "ordinary";
+  return (serviceType || "ordinary") === "ordinary" || category === "super";
+};
+
 // Get current pricing (latest)
 router.get("/admin/pricing", requireAdmin, async (req, res) => {
   try {
-    const pricing = await PricingSetting.findOne({ order: [["createdAt", "DESC"]] });
-    if (!pricing) return res.json({ pricing: null });
-    res.json({ pricing });
+    const latest = await PricingSetting.findOne({ order: [["createdAt", "DESC"]] });
+    const ordinary = await PricingSetting.findOne({
+      where: { serviceType: "ordinary" },
+      order: [["createdAt", "DESC"]],
+    });
+    const superPricing = await PricingSetting.findOne({
+      where: { serviceType: "super" },
+      order: [["createdAt", "DESC"]],
+    });
+
+    res.json({
+      pricing: ordinary || latest || null,
+      pricingByType: {
+        ordinary: ordinary || latest || null,
+        super: superPricing || ordinary || latest || null,
+      },
+    });
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
 });
 
 // Update pricing (create new record)
 router.put("/admin/pricing", requireAdmin, async (req, res) => {
   try {
-    const { baseFare, pricePerKm, pricePerMinute, minimumFare, surgeEnabled, surgeMultiplier } = req.body;
+    const { baseFare, pricePerKm, pricePerMinute, minimumFare, surgeEnabled, surgeMultiplier, serviceType = "ordinary" } = req.body;
+    if (!["ordinary", "super"].includes(serviceType)) return res.status(400).json({ error: "serviceType must be ordinary or super" });
     if (baseFare == null || pricePerKm == null) return res.status(400).json({ error: "baseFare and pricePerKm are required" });
 
     const newRec = await PricingSetting.create({
+      serviceType,
       baseFare,
       pricePerKm,
       pricePerMinute: pricePerMinute != null ? pricePerMinute : null,
@@ -104,6 +125,12 @@ router.post("/admin/ride-requests/:id/assign-driver", requireAdmin, async (req, 
     const ride = await RideRequest.findByPk(req.params.id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!ride) { await t.rollback(); return res.status(404).json({ error: "not_found" }); }
     if (ride.status !== "pending") { await t.rollback(); return res.status(400).json({ error: "ride_not_pending" }); }
+    const driver = await User.findByPk(driverId, { transaction: t });
+    if (!driver || driver.role !== "driver") { await t.rollback(); return res.status(404).json({ error: "driver_not_found" }); }
+    if (!driverCanReceiveService(driver.vehicleCategory, ride.serviceType || "ordinary")) {
+      await t.rollback();
+      return res.status(400).json({ error: "driver_service_type_not_allowed" });
+    }
 
     ride.driver_id = driverId;
     ride.status = "accepted";

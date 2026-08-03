@@ -19,6 +19,12 @@ function haversineKm(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+const normalizeServiceType = (value) => (value === "super" ? "super" : "ordinary");
+
+const driverCanReceiveService = (driverCategory, serviceType) => {
+  const category = driverCategory === "super" ? "super" : "ordinary";
+  return serviceType === "ordinary" || category === "super";
+};
 
 const init = async (io) => {
   ioInstance = io;
@@ -208,6 +214,12 @@ const init = async (io) => {
               socket.emit("request:accept_failed", { reason: "not_pending" });
               return;
             }
+            if (!driverCanReceiveService(driver?.vehicleCategory, req.serviceType || "ordinary")) {
+              await t.rollback();
+              await redisService.releaseLock(lockKey, String(user.id));
+              socket.emit("request:accept_failed", { reason: "service_type_not_allowed" });
+              return;
+            }
 
             req.status = "accepted";
             req.driver_id = user.id;
@@ -373,6 +385,7 @@ const init = async (io) => {
         const t = await sequelize.transaction();
         try {
           const { pickup, dropoff, distanceKm, durationMin } = data;
+          const serviceType = normalizeServiceType(data?.serviceType);
 
           if (!pickup || !dropoff) {
             await t.rollback();
@@ -420,10 +433,18 @@ const init = async (io) => {
           };
 
           try {
-            const pricing = await PricingSetting.findOne({
+            let pricing = await PricingSetting.findOne({
+              where: { serviceType },
               order: [["createdAt", "DESC"]],
               transaction: t,
             });
+            if (!pricing && serviceType === "super") {
+              pricing = await PricingSetting.findOne({
+                where: { serviceType: "ordinary" },
+                order: [["createdAt", "DESC"]],
+                transaction: t,
+              });
+            }
 
             const base =
               pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
@@ -484,6 +505,7 @@ const init = async (io) => {
               distanceKm: dKm,
               durationMin: dur,
               estimatedFare,
+              serviceType,
               status: "pending",
             },
             { transaction: t }
@@ -510,11 +532,18 @@ const init = async (io) => {
             });
 
           const driverIds = (nearby || []).map(String).slice(0, 30);
+          const driverRows = await User.findAll({
+            where: { id: { [Op.in]: driverIds }, role: "driver", status: "active" },
+            attributes: ["id", "vehicleCategory"],
+          });
+          const driverCategoryById = new Map(driverRows.map((driver) => [String(driver.id), driver.vehicleCategory || "ordinary"]));
 
           let sentCount = 0;
           const sentKey = `request:sent_to:${newReq.id}`;
 
           for (const did of driverIds) {
+            if (!driverCanReceiveService(driverCategoryById.get(String(did)), serviceType)) continue;
+
             const isOnline = await redisClient.sIsMember("drivers:online", String(did));
             if (!isOnline) continue;
 

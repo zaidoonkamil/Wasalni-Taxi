@@ -518,6 +518,7 @@ router.post("/drivers/register",
         vehicleType,
         vehicleColor,
         vehicleNumber,
+        vehicleCategory,
         location,
         status,
       } = req.body;
@@ -530,6 +531,10 @@ router.post("/drivers/register",
           error: "status غير صحيح (active | blocked | pending)",
         });
       }
+
+      const normalizedVehicleCategory = ["ordinary", "super"].includes(vehicleCategory)
+        ? vehicleCategory
+        : "ordinary";
       
       if (!name || !phone || !password) {
         return res.status(400).json({ error: "جميع الحقول مطلوبة: name, phone, password" });
@@ -586,6 +591,7 @@ router.post("/drivers/register",
         vehicleType,
         vehicleColor,
         vehicleNumber,
+        vehicleCategory: normalizedVehicleCategory,
         location: locationText,
         drivingLicenseFront: { main: licFront },
         drivingLicenseBack: { main: licBack },
@@ -599,6 +605,110 @@ router.post("/drivers/register",
       });
     } catch (err) {
       console.error("❌ Error creating driver:", err);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  }
+);
+
+router.post("/admin/drivers",
+  requireAdmin,
+  uploadImage.fields([
+    { name: "driverImage", maxCount: 1 },
+    { name: "carImages", maxCount: 10 },
+    { name: "drivingLicenseFront", maxCount: 1 },
+    { name: "drivingLicenseBack", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const {
+        name,
+        password,
+        vehicleType,
+        vehicleColor,
+        vehicleNumber,
+        vehicleCategory,
+        location,
+        status,
+      } = req.body;
+
+      let { phone } = req.body;
+      phone = normalizePhone(phone);
+
+      if (status && !["active", "blocked", "pending"].includes(status)) {
+        return res.status(400).json({
+          error: "status غير صحيح (active | blocked | pending)",
+        });
+      }
+
+      const normalizedVehicleCategory = ["ordinary", "super"].includes(vehicleCategory)
+        ? vehicleCategory
+        : "ordinary";
+
+      if (!name || !phone || !password) {
+        return res.status(400).json({ error: "جميع الحقول مطلوبة: name, phone, password" });
+      }
+
+      if (!vehicleType || !vehicleColor || !vehicleNumber) {
+        return res.status(400).json({
+          error: "حقول السائق مطلوبة: نوع السيارة, لون السيارة, رقم السيارة",
+        });
+      }
+
+      const locationText = String(location || "").trim();
+      if (!locationText) {
+        return res.status(400).json({
+          error: "الموقع مطلوب كنص مثال: بغداد الاعضمية قرب محطة البانزين خانة",
+        });
+      }
+
+      const driverImg = req.files?.driverImage?.[0]?.filename;
+      const carImgs =
+        Array.isArray(req.files?.carImages) ? req.files.carImages.map((f) => f.filename) : [];
+      const licFront = req.files?.drivingLicenseFront?.[0]?.filename;
+      const licBack = req.files?.drivingLicenseBack?.[0]?.filename;
+
+      if (!driverImg) {
+        return res.status(400).json({ error: "صورة السائق مطلوبة" });
+      }
+      if (!carImgs.length) {
+        return res.status(400).json({ error: "لازم ترفع على الأقل صورة واحدة للسيارة" });
+      }
+      if (!licFront || !licBack) {
+        return res.status(400).json({
+          error: "صور اجازة السوق مطلوبة: drivingLicenseFront, drivingLicenseBack",
+        });
+      }
+
+      const existingPhone = await User.findOne({ where: { phone } });
+      if (existingPhone) {
+        return res.status(400).json({ error: "تم استخدام رقم الهاتف من مستخدم اخر" });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+      const driver = await User.create({
+        name,
+        phone,
+        password: hashedPassword,
+        role: "driver",
+        status: status || "active",
+        driverImage: { main: driverImg },
+        carImages: { main: carImgs[0], images: carImgs },
+        vehicleType,
+        vehicleColor,
+        vehicleNumber,
+        vehicleCategory: normalizedVehicleCategory,
+        location: locationText,
+        drivingLicenseFront: { main: licFront },
+        drivingLicenseBack: { main: licBack },
+      });
+
+      return res.status(201).json({
+        message: "تم إنشاء حساب السائق من لوحة التحكم بنجاح",
+        user: safeUser(driver),
+      });
+    } catch (err) {
+      console.error("❌ Error admin creating driver:", err);
       return res.status(500).json({ error: "Internal Server Error" });
     }
   }
@@ -877,6 +987,34 @@ router.patch("/drivers/:id/activate", requireAdmin, async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Error activating driver:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+router.patch("/admin/drivers/:id/vehicle-category", requireAdmin, upload.none(), async (req, res) => {
+  try {
+    const driverId = Number(req.params.id);
+    const { vehicleCategory } = req.body;
+
+    if (!["ordinary", "super"].includes(vehicleCategory)) {
+      return res.status(400).json({ error: "vehicleCategory غير صحيح (ordinary | super)" });
+    }
+
+    const driver = await User.findByPk(driverId);
+    if (!driver) return res.status(404).json({ error: "السائق غير موجود" });
+    if (driver.role !== "driver") {
+      return res.status(400).json({ error: "هذا المستخدم ليس سائق" });
+    }
+
+    driver.vehicleCategory = vehicleCategory;
+    await driver.save();
+
+    return res.status(200).json({
+      message: "تم تحديث فئة سيارة السائق",
+      driver: safeUser(driver),
+    });
+  } catch (err) {
+    console.error("❌ Error updating driver vehicle category:", err);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });

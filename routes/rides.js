@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { authenticateToken } = require("../middlewares/auth");
-const { RideRequest, PricingSetting } = require("../models");
+const { RideRequest, PricingSetting, User } = require("../models");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const { Op } = require("sequelize");
@@ -10,11 +10,19 @@ function roundUpTo250(amount) {
   return Math.ceil(amount / 250) * 250;
 }
 
+const normalizeServiceType = (value) => (value === "super" ? "super" : "ordinary");
+
+const driverCanReceiveService = (driverCategory, serviceType) => {
+  const category = driverCategory === "super" ? "super" : "ordinary";
+  return serviceType === "ordinary" || category === "super";
+};
+
 // إنشاء طلب رحلة جديد (REST)
 router.post("/ride-requests", authenticateToken, async (req, res) => {
   try {
     const user = req.user;
     const { pickup, dropoff } = req.body;
+    const serviceType = normalizeServiceType(req.body.serviceType);
 
     if (!pickup || !dropoff) {
       return res.status(400).json({ error: "pickup and dropoff required" });
@@ -47,9 +55,16 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     console.log("[POST /ride-requests] parsed dKm:", dKm, "parsed dur:", dur);
 
     try {
-      const pricing = await PricingSetting.findOne({
+      let pricing = await PricingSetting.findOne({
+        where: { serviceType },
         order: [["createdAt", "DESC"]],
       });
+      if (!pricing && serviceType === "super") {
+        pricing = await PricingSetting.findOne({
+          where: { serviceType: "ordinary" },
+          order: [["createdAt", "DESC"]],
+        });
+      }
 
       console.log("[POST /ride-requests] pricing:", {
         baseFare: pricing?.baseFare,
@@ -119,6 +134,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       distanceKm: dKm,
       durationMin: dur,
       estimatedFare,
+      serviceType,
       status: "pending",
     });
 
@@ -141,8 +157,15 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       .catch(() => []);
 
     const driverIds = (raw || []).map(String).slice(0, 30);
+    const driverRows = await User.findAll({
+      where: { id: { [Op.in]: driverIds }, role: "driver", status: "active" },
+      attributes: ["id", "vehicleCategory"],
+    });
+    const driverCategoryById = new Map(driverRows.map((driver) => [String(driver.id), driver.vehicleCategory || "ordinary"]));
 
     for (const did of driverIds) {
+      if (!driverCanReceiveService(driverCategoryById.get(String(did)), serviceType)) continue;
+
       const busyRideId = await redisClient.get(`driver:busy:${did}`);
       if (busyRideId) continue;
 
