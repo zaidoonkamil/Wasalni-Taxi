@@ -10,6 +10,7 @@ const adminStatsRouter = require("./routes/adminStats");
 const adminDebtRouter = require("./routes/adminDebt");
 const whatsappRouter = require("./routes/whatsapp");
 const systemContentRouter = require("./routes/systemContent");
+const adsRouter = require("./routes/ads");
 const { startWhatsAppAutoInit } = require("./services/waSender");
 const ensureSchema = require("./services/ensureSchema");
 
@@ -39,6 +40,7 @@ app.use("/", adminStatsRouter);
 app.use("/", adminDebtRouter);
 app.use("/", whatsappRouter);
 app.use("/", systemContentRouter);
+app.use("/", adsRouter);
 app.use("/", chat.router);
 
 const server = http.createServer(app);
