@@ -309,30 +309,34 @@ const init = async (io) => {
 
           // --- Debt / commission handling (MySQL only) ---
           try {
-            // load latest settings
-            const commissionTypeSetting = await SystemSetting.findOne({ where: { key: "DRIVER_COMMISSION_TYPE" } });
-            const commissionValueSetting = await SystemSetting.findOne({ where: { key: "DRIVER_COMMISSION_VALUE" } });
-            const debtLimitSetting = await SystemSetting.findOne({ where: { key: "DRIVER_DEBT_LIMIT" } });
+            const t = await sequelize.transaction();
+            try {
+              const driver = await User.findByPk(req.driver_id, { transaction: t, lock: t.LOCK.UPDATE });
+              if (driver) {
+                const prefix = driver.vehicleCategory === "super" ? "SUPER_" : "";
+                const commissionTypeSetting =
+                  await SystemSetting.findOne({ where: { key: `${prefix}DRIVER_COMMISSION_TYPE` }, transaction: t }) ||
+                  await SystemSetting.findOne({ where: { key: "DRIVER_COMMISSION_TYPE" }, transaction: t });
+                const commissionValueSetting =
+                  await SystemSetting.findOne({ where: { key: `${prefix}DRIVER_COMMISSION_VALUE` }, transaction: t }) ||
+                  await SystemSetting.findOne({ where: { key: "DRIVER_COMMISSION_VALUE" }, transaction: t });
+                const debtLimitSetting =
+                  await SystemSetting.findOne({ where: { key: `${prefix}DRIVER_DEBT_LIMIT` }, transaction: t }) ||
+                  await SystemSetting.findOne({ where: { key: "DRIVER_DEBT_LIMIT" }, transaction: t });
 
-            const commissionType = commissionTypeSetting ? (commissionTypeSetting.value || "fixed") : "fixed";
-            const commissionValue = commissionValueSetting ? parseFloat(commissionValueSetting.value) : 0;
-            const systemLimit = debtLimitSetting ? parseFloat(debtLimitSetting.value) : null;
+                const commissionType = commissionTypeSetting ? (commissionTypeSetting.value || "fixed") : "fixed";
+                const commissionValue = commissionValueSetting ? parseFloat(commissionValueSetting.value) : 0;
+                const systemLimit = debtLimitSetting ? parseFloat(debtLimitSetting.value) : null;
 
-            // calculate commission amount
-            let commissionAmount = 0;
-            if (commissionType === "percent") {
-              const fare = req.estimatedFare ? parseFloat(req.estimatedFare) : 0;
-              commissionAmount = (fare * (commissionValue || 0)) / 100;
-            } else {
-              commissionAmount = commissionValue || 0;
-            }
+                let commissionAmount = 0;
+                if (commissionType === "percent") {
+                  const fare = req.estimatedFare ? parseFloat(req.estimatedFare) : 0;
+                  commissionAmount = (fare * (commissionValue || 0)) / 100;
+                } else {
+                  commissionAmount = commissionValue || 0;
+                }
 
-            // Only charge if amount > 0
-            if (commissionAmount > 0) {
-              const t = await sequelize.transaction();
-              try {
-                const driver = await User.findByPk(req.driver_id, { transaction: t, lock: t.LOCK.UPDATE });
-                if (driver) {
+                if (commissionAmount > 0) {
                   const prevDebt = parseFloat(driver.driverDebt || 0);
                   const newDebt = prevDebt + commissionAmount;
                   driver.driverDebt = newDebt;
@@ -367,11 +371,11 @@ const init = async (io) => {
 
                   await driver.save({ transaction: t });
                 }
-                await t.commit();
-              } catch (err) {
-                await t.rollback();
-                console.error("commission transaction error", err.message);
               }
+              await t.commit();
+            } catch (err) {
+              await t.rollback();
+              console.error("commission transaction error", err.message);
             }
           } catch (e) {
             console.error("debt handling error", e.message);

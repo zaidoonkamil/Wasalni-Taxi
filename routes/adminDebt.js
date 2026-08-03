@@ -13,6 +13,16 @@ const getSetting = async (key) => {
   return s ? s.value : null;
 };
 
+const categoryPrefix = (category) => (category === "super" ? "SUPER_" : "");
+
+const getDebtLimitForDriver = async (driver) => {
+  if (driver.driverDebtLimitOverride != null) return parseFloat(driver.driverDebtLimitOverride);
+  const prefix = categoryPrefix(driver.vehicleCategory);
+  const value = await getSettingValue(`${prefix}DRIVER_DEBT_LIMIT`);
+  if (value != null) return parseFloat(value);
+  return parseFloat((await getSettingValue("DRIVER_DEBT_LIMIT")) || 0);
+};
+
 const applyDriverDebtPayment = async ({ driver, amount, note, adminId, transaction }) => {
   const prev = parseFloat(driver.driverDebt || 0);
   let next = prev - amount;
@@ -30,9 +40,7 @@ const applyDriverDebtPayment = async ({ driver, amount, note, adminId, transacti
     { transaction }
   );
 
-  const limitVal = driver.driverDebtLimitOverride != null
-    ? parseFloat(driver.driverDebtLimitOverride)
-    : parseFloat((await getSettingValue("DRIVER_DEBT_LIMIT")) || 0);
+  const limitVal = await getDebtLimitForDriver(driver);
   if (driver.isDebtBlocked && next < limitVal) {
     driver.isDebtBlocked = false;
     driver.blockReason = null;
@@ -59,14 +67,40 @@ router.get("/admin/debt/settings", async (req, res) => {
     const limit = await getSetting("DRIVER_DEBT_LIMIT");
     const type = await getSetting("DRIVER_COMMISSION_TYPE");
     const value = await getSetting("DRIVER_COMMISSION_VALUE");
-    res.json({ limit: limit != null ? parseFloat(limit) : null, commissionType: type || null, commissionValue: value != null ? parseFloat(value) : null });
+    const superLimit = await getSetting("SUPER_DRIVER_DEBT_LIMIT");
+    const superType = await getSetting("SUPER_DRIVER_COMMISSION_TYPE");
+    const superValue = await getSetting("SUPER_DRIVER_COMMISSION_VALUE");
+    const ordinarySettings = {
+      limit: limit != null ? parseFloat(limit) : null,
+      commissionType: type || null,
+      commissionValue: value != null ? parseFloat(value) : null,
+    };
+    const superSettings = {
+      limit: superLimit != null ? parseFloat(superLimit) : ordinarySettings.limit,
+      commissionType: superType || ordinarySettings.commissionType,
+      commissionValue: superValue != null ? parseFloat(superValue) : ordinarySettings.commissionValue,
+    };
+    res.json({
+      ...ordinarySettings,
+      settingsByType: {
+        ordinary: ordinarySettings,
+        super: superSettings,
+      },
+    });
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
 });
 
 // PUT settings
 router.put("/admin/debt/settings", requireAdmin, async (req, res) => {
   try {
-    const { DRIVER_DEBT_LIMIT, DRIVER_COMMISSION_TYPE, DRIVER_COMMISSION_VALUE } = req.body;
+    const {
+      DRIVER_DEBT_LIMIT,
+      DRIVER_COMMISSION_TYPE,
+      DRIVER_COMMISSION_VALUE,
+      SUPER_DRIVER_DEBT_LIMIT,
+      SUPER_DRIVER_COMMISSION_TYPE,
+      SUPER_DRIVER_COMMISSION_VALUE,
+    } = req.body;
     if (DRIVER_DEBT_LIMIT != null) {
       await SystemSetting.upsert({ key: "DRIVER_DEBT_LIMIT", value: String(DRIVER_DEBT_LIMIT) });
     }
@@ -75,6 +109,15 @@ router.put("/admin/debt/settings", requireAdmin, async (req, res) => {
     }
     if (DRIVER_COMMISSION_VALUE != null) {
       await SystemSetting.upsert({ key: "DRIVER_COMMISSION_VALUE", value: String(DRIVER_COMMISSION_VALUE) });
+    }
+    if (SUPER_DRIVER_DEBT_LIMIT != null) {
+      await SystemSetting.upsert({ key: "SUPER_DRIVER_DEBT_LIMIT", value: String(SUPER_DRIVER_DEBT_LIMIT) });
+    }
+    if (SUPER_DRIVER_COMMISSION_TYPE != null) {
+      await SystemSetting.upsert({ key: "SUPER_DRIVER_COMMISSION_TYPE", value: String(SUPER_DRIVER_COMMISSION_TYPE) });
+    }
+    if (SUPER_DRIVER_COMMISSION_VALUE != null) {
+      await SystemSetting.upsert({ key: "SUPER_DRIVER_COMMISSION_VALUE", value: String(SUPER_DRIVER_COMMISSION_VALUE) });
     }
     res.json({ success: true });
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
