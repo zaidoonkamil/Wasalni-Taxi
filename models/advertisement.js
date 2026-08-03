@@ -5,7 +5,7 @@ const Advertisement = sequelize.define(
   "Advertisement",
   {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    title: { type: DataTypes.STRING, allowNull: false },
+    title: { type: DataTypes.STRING, allowNull: false, defaultValue: "" },
     description: { type: DataTypes.STRING, allowNull: true },
     image: { type: DataTypes.STRING, allowNull: false },
     isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },

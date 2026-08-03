@@ -63,7 +63,6 @@ router.post("/admin/ads", requireAdmin, uploadImage.single("image"), async (req,
     const isActive = toBool(req.body.isActive, true);
     const image = req.file?.filename;
 
-    if (!title) return res.status(400).json({ error: "title required" });
     if (!image) return res.status(400).json({ error: "image required" });
 
     const ad = await Advertisement.create({
@@ -89,7 +88,6 @@ router.put("/admin/ads/:id", requireAdmin, uploadImage.single("image"), async (r
 
     if (req.body.title != null) {
       const title = String(req.body.title || "").trim();
-      if (!title) return res.status(400).json({ error: "title required" });
       ad.title = title;
     }
     if (req.body.description != null) ad.description = String(req.body.description || "").trim();
