@@ -450,6 +450,22 @@ const requireAdmin = async (req, res, next) => {
   }
 };
 
+const requireAuth = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization;
+    if (!token) return res.status(401).json({ error: "Token is missing" });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findByPk(decoded.id);
+    if (!user) return res.status(401).json({ error: "User not found" });
+
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+};
+
 const safeUser = (user) => {
   const u = user.toJSON();
   delete u.password;
@@ -917,6 +933,43 @@ router.get("/profile", async (req, res) => {
       return res.status(500).json({ error: "Internal Server Error" });
     }
   });
+});
+
+router.patch("/profile", requireAuth, async (req, res) => {
+  try {
+    const name = String(req.body.name || "").trim();
+    const phone = normalizePhone(req.body.phone);
+
+    if (!name || !phone) {
+      return res.status(400).json({ error: "الاسم ورقم الهاتف مطلوبان" });
+    }
+
+    const existingPhone = await User.findOne({
+      where: {
+        phone,
+        id: { [Op.ne]: req.user.id },
+      },
+    });
+
+    if (existingPhone) {
+      return res.status(400).json({ error: "رقم الهاتف مستخدم من حساب آخر" });
+    }
+
+    req.user.name = name;
+    req.user.phone = phone;
+    await req.user.save();
+
+    const token = generateToken(req.user);
+
+    return res.status(200).json({
+      message: "تم تحديث الملف الشخصي بنجاح",
+      user: safeUser(req.user),
+      token,
+    });
+  } catch (err) {
+    console.error("Error updating profile:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
 router.delete("/users/:id", async (req, res) => {
