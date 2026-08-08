@@ -2,8 +2,8 @@ const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
-const { Op } = require("sequelize");
-const { User, UserDevice } = require("../models");
+const { Op, fn, col } = require("sequelize");
+const { User, UserDevice, DriverRating } = require("../models");
 const uploadImage = require("../middlewares/uploads");
 const router = express.Router();
 const upload = multer();
@@ -472,6 +472,38 @@ const safeUser = (user) => {
   return u;
 };
 
+const attachDriverRatingSummaries = async (drivers) => {
+  const driverIds = drivers.map((driver) => driver.id);
+  if (!driverIds.length) return [];
+
+  const ratings = await DriverRating.findAll({
+    where: { driver_id: { [Op.in]: driverIds }, skipped: false },
+    attributes: [
+      "driver_id",
+      [fn("COUNT", col("id")), "ratingCount"],
+      [fn("AVG", col("rating")), "ratingAverage"],
+    ],
+    group: ["driver_id"],
+    raw: true,
+  });
+
+  const byDriver = new Map(
+    ratings.map((row) => [
+      Number(row.driver_id),
+      {
+        ratingCount: Number(row.ratingCount || 0),
+        ratingAverage: Number(Number(row.ratingAverage || 0).toFixed(2)),
+      },
+    ])
+  );
+
+  return drivers.map((driver) => {
+    const data = safeUser(driver);
+    const summary = byDriver.get(driver.id) || { ratingCount: 0, ratingAverage: 0 };
+    return { ...data, ...summary };
+  });
+};
+
 router.post("/users", upload.none(), async (req, res) => {
   try {
     const { name, password, role = "user", status } = req.body;
@@ -820,7 +852,7 @@ router.get("/driversOnly", async (req, res) => {
     });
 
     return res.status(200).json({
-      drivers,
+      drivers: await attachDriverRatingSummaries(drivers),
       pagination: {
         totalDrivers: count,
         currentPage: page,
@@ -857,7 +889,7 @@ router.get("/driversOnly/search", async (req, res) => {
     });
 
     return res.status(200).json({
-      drivers,
+      drivers: await attachDriverRatingSummaries(drivers),
       pagination: {
         totalDrivers: count,
         currentPage: page,
@@ -906,6 +938,10 @@ router.get("/user/:id", async (req, res) => {
       attributes: { exclude: ["password"] },
     });
     if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+    if (user.role === "driver") {
+      const [driverWithSummary] = await attachDriverRatingSummaries([user]);
+      return res.status(200).json(driverWithSummary);
+    }
     return res.status(200).json(user);
   } catch (err) {
     console.error("❌ Error fetching user:", err);
@@ -927,6 +963,10 @@ router.get("/profile", async (req, res) => {
 
       if (!user) return res.status(404).json({ error: "User not found" });
 
+      if (user.role === "driver") {
+        const [driverWithSummary] = await attachDriverRatingSummaries([user]);
+        return res.status(200).json(driverWithSummary);
+      }
       return res.status(200).json(user);
     } catch (error) {
       console.error("❌ Error fetching user profile:", error);

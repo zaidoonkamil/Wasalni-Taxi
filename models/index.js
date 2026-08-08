@@ -9,6 +9,7 @@ const ChatMessage = require("./ChatMessage");
 const OtpCode = require("./OtpCode");
 const PasswordResetOtp = require("./PasswordResetOtp");
 const Advertisement = require("./advertisement");
+const DriverRating = require("./driver_rating");
 
 User.hasMany(UserDevice, { foreignKey: "user_id", as: "devices", onDelete: "CASCADE" });
 UserDevice.belongsTo(User, { foreignKey: "user_id", as: "user" });
@@ -17,6 +18,13 @@ User.hasMany(RideRequest, { foreignKey: "rider_id", as: "rideRequests" });
 User.hasMany(RideRequest, { foreignKey: "driver_id", as: "assignedRides" });
 RideRequest.belongsTo(User, { foreignKey: "rider_id", as: "rider" });
 RideRequest.belongsTo(User, { foreignKey: "driver_id", as: "driver" });
+
+User.hasMany(DriverRating, { foreignKey: "driver_id", as: "receivedRatings", onDelete: "CASCADE" });
+User.hasMany(DriverRating, { foreignKey: "rider_id", as: "givenDriverRatings", onDelete: "CASCADE" });
+DriverRating.belongsTo(User, { foreignKey: "driver_id", as: "driver" });
+DriverRating.belongsTo(User, { foreignKey: "rider_id", as: "rider" });
+RideRequest.hasOne(DriverRating, { foreignKey: "ride_request_id", as: "driverRating", onDelete: "CASCADE" });
+DriverRating.belongsTo(RideRequest, { foreignKey: "ride_request_id", as: "ride" });
 
 RideRequest.hasMany(RideEvent, { foreignKey: "ride_request_id", as: "events", onDelete: "CASCADE" });
 RideEvent.belongsTo(RideRequest, { foreignKey: "ride_request_id", as: "ride" });
@@ -44,4 +52,5 @@ module.exports = {
   OtpCode,
   PasswordResetOtp,
   Advertisement,
+  DriverRating,
 };
