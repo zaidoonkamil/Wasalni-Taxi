@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const { Op, fn, col } = require("sequelize");
 const { authenticateToken } = require("../middlewares/auth");
 const { DriverRating, RideRequest, User } = require("../models");

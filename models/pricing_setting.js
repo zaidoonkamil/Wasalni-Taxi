@@ -10,6 +10,11 @@ const PricingSetting = sequelize.define(
       allowNull: false,
       defaultValue: "ordinary",
     },
+    areaType: {
+      type: DataTypes.ENUM("rich", "poor", "mixed"),
+      allowNull: false,
+      defaultValue: "mixed",
+    },
     baseFare: { type: DataTypes.DECIMAL(10, 2), allowNull: false, defaultValue: 0 },
     pricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: false, defaultValue: 0 },
     pricePerMinute: { type: DataTypes.DECIMAL(10, 3), allowNull: true, defaultValue: null },

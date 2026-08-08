@@ -1,9 +1,10 @@
 const jwt = require("jsonwebtoken");
 const redisService = require("./redis");
-const { User, RideRequest, PricingSetting, SystemSetting, DriverDebtLedger } = require("../models");
+const { User, RideRequest, SystemSetting, DriverDebtLedger, DriverRating } = require("../models");
 const sequelize = require("../config/db");
 const notifications = require("./notifications") || require("../services/notifications");
 const { Op } = require("sequelize");
+const { calculateFare, normalizeServiceType } = require("./areaPricing");
 
 let ioInstance = null;
 
@@ -19,11 +20,38 @@ function haversineKm(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-const normalizeServiceType = (value) => (value === "super" ? "super" : "ordinary");
-
 const driverCanReceiveService = (driverCategory, serviceType) => {
   const category = driverCategory === "super" ? "super" : "ordinary";
   return serviceType === "ordinary" || category === "super";
+};
+
+const previousGoodDriverMessage = {
+  title: "زبون يعرفك يطلب رحلة",
+  message: "أحد الزبائن الذين أوصلتهم سابقاً وقيّم رحلتك بشكل جيد يطلب تكسي الآن بالقرب منك.",
+};
+
+const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
+  if (!riderId || !driverIds.length) return new Map();
+
+  const rows = await DriverRating.findAll({
+    where: {
+      rider_id: riderId,
+      driver_id: { [Op.in]: driverIds },
+      rating: { [Op.gte]: 3 },
+      skipped: false,
+    },
+    attributes: ["driver_id", "rating"],
+    raw: true,
+  });
+
+  const byDriver = new Map();
+  for (const row of rows) {
+    const driverId = String(row.driver_id);
+    const rating = Number(row.rating || 0);
+    const current = byDriver.get(driverId) || 0;
+    if (rating > current) byDriver.set(driverId, rating);
+  }
+  return byDriver;
 };
 
 const init = async (io) => {
@@ -419,6 +447,7 @@ const init = async (io) => {
           }
 
           let estimatedFare = null;
+          let pricingAreaType = "mixed";
 
           const serverKm =
             pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
@@ -429,72 +458,19 @@ const init = async (io) => {
           const dur = durationMin != null ? parseFloat(durationMin) : null;
 
 
-          const DEFAULT_PRICING = {
-            baseFare: 2000,
-            pricePerKm: 500,
-            pricePerMinute: 0,
-            minimumFare: 3000,
-          };
-
           try {
-            let pricing = await PricingSetting.findOne({
-              where: { serviceType },
-              order: [["createdAt", "DESC"]],
+            const fare = await calculateFare({
+              pickup,
+              dropoff,
+              distanceKm: dKm,
+              durationMin: dur,
+              serviceType,
               transaction: t,
             });
-            if (!pricing && serviceType === "super") {
-              pricing = await PricingSetting.findOne({
-                where: { serviceType: "ordinary" },
-                order: [["createdAt", "DESC"]],
-                transaction: t,
-              });
-            }
-
-            const base =
-              pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
-                ? parseFloat(pricing.baseFare)
-                : DEFAULT_PRICING.baseFare;
-
-            const perKm =
-              pricing?.pricePerKm != null && Number.isFinite(parseFloat(pricing.pricePerKm))
-                ? parseFloat(pricing.pricePerKm)
-                : DEFAULT_PRICING.pricePerKm;
-
-            const perMin =
-              pricing?.pricePerMinute != null && Number.isFinite(parseFloat(pricing.pricePerMinute))
-                ? parseFloat(pricing.pricePerMinute)
-                : DEFAULT_PRICING.pricePerMinute;
-
-            const minimum =
-              pricing?.minimumFare != null && Number.isFinite(parseFloat(pricing.minimumFare))
-                ? parseFloat(pricing.minimumFare)
-                : DEFAULT_PRICING.minimumFare;
-
-            if (dKm != null) {
-              const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
-              const afterMin  = Math.max(minimum, beforeMin);
-
-              const rounded = Math.round(afterMin / 250) * 250;
-
-              estimatedFare = String(rounded);
-            } else {
-              console.log("[FARE CHECK SOCKET] skipped: dKm is null");
-            }
+            estimatedFare = fare.estimatedFare;
+            pricingAreaType = fare.areaType;
           } catch (e) {
             console.error("pricing calc error:", e.message);
-
-            if (dKm != null) {
-              const beforeMin =
-                DEFAULT_PRICING.baseFare +
-                dKm * DEFAULT_PRICING.pricePerKm +
-                (dur != null ? dur * DEFAULT_PRICING.pricePerMinute : 0);
-
-              const afterMin = Math.max(DEFAULT_PRICING.minimumFare, beforeMin);
-
-              const rounded = Math.round(afterMin / 250) * 250;
-
-              estimatedFare = String(rounded);
-            }
           }
 
           const newReq = await RideRequest.create(
@@ -510,6 +486,7 @@ const init = async (io) => {
               durationMin: dur,
               estimatedFare,
               serviceType,
+              pricingAreaType,
               status: "pending",
             },
             { transaction: t }
@@ -541,6 +518,7 @@ const init = async (io) => {
             attributes: ["id", "vehicleCategory"],
           });
           const driverCategoryById = new Map(driverRows.map((driver) => [String(driver.id), driver.vehicleCategory || "ordinary"]));
+          const previousGoodRatingsByDriver = await getPreviousGoodDriverRatings(user.id, driverIds);
 
           let sentCount = 0;
           const sentKey = `request:sent_to:${newReq.id}`;
@@ -563,9 +541,33 @@ const init = async (io) => {
 
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
             if (driverSocketId && ioInstance) {
-              ioInstance.to(driverSocketId).emit("request:new", { request: newReq });
+              const previousRating = previousGoodRatingsByDriver.get(String(did));
+              const priorityMatch = previousRating != null;
+              const payload = priorityMatch
+                ? {
+                    request: newReq,
+                    priorityMatch: {
+                      type: "previous_good_rating",
+                      rating: previousRating,
+                      title: previousGoodDriverMessage.title,
+                      message: previousGoodDriverMessage.message,
+                    },
+                  }
+                : { request: newReq };
+
+              ioInstance.to(driverSocketId).emit("request:new", payload);
               sentCount++;
               await redisClient.sAdd(sentKey, String(did));
+
+              if (priorityMatch) {
+                notifications
+                  .sendNotificationToUser(
+                    did,
+                    previousGoodDriverMessage.message,
+                    previousGoodDriverMessage.title
+                  )
+                  .catch((e) => console.error("previous good driver push error:", e.message));
+              }
             }
           }
 

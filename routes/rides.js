@@ -1,21 +1,79 @@
-const express = require("express");
+﻿const express = require("express");
 const router = express.Router();
 const { authenticateToken } = require("../middlewares/auth");
-const { RideRequest, PricingSetting, User } = require("../models");
+const { RideRequest, User, DriverRating } = require("../models");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
+const notifications = require("../services/notifications");
 const { Op } = require("sequelize");
+const { calculateFare, normalizeServiceType } = require("../services/areaPricing");
 
 function roundUpTo250(amount) {
   return Math.ceil(amount / 250) * 250;
 }
 
-const normalizeServiceType = (value) => (value === "super" ? "super" : "ordinary");
-
 const driverCanReceiveService = (driverCategory, serviceType) => {
   const category = driverCategory === "super" ? "super" : "ordinary";
   return serviceType === "ordinary" || category === "super";
 };
+
+const previousGoodDriverMessage = {
+  title: "زبون يعرفك يطلب رحلة",
+  message: "أحد الزبائن الذين أوصلتهم سابقاً وقيّم رحلتك بشكل جيد يطلب تكسي الآن بالقرب منك.",
+};
+
+const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
+  if (!riderId || !driverIds.length) return new Map();
+
+  const rows = await DriverRating.findAll({
+    where: {
+      rider_id: riderId,
+      driver_id: { [Op.in]: driverIds },
+      rating: { [Op.gte]: 3 },
+      skipped: false,
+    },
+    attributes: ["driver_id", "rating"],
+    raw: true,
+  });
+
+  const byDriver = new Map();
+  for (const row of rows) {
+    const driverId = String(row.driver_id);
+    const rating = Number(row.rating || 0);
+    const current = byDriver.get(driverId) || 0;
+    if (rating > current) byDriver.set(driverId, rating);
+  }
+  return byDriver;
+};
+
+router.post("/ride-requests/estimate", authenticateToken, async (req, res) => {
+  try {
+    const { pickup, dropoff, distanceKm, durationMin } = req.body;
+    const serviceType = normalizeServiceType(req.body.serviceType);
+    if (!pickup || !dropoff) {
+      return res.status(400).json({ error: "pickup and dropoff required" });
+    }
+
+    const result = await calculateFare({
+      pickup,
+      dropoff,
+      distanceKm,
+      durationMin,
+      serviceType,
+    });
+
+    res.json({
+      success: true,
+      serviceType,
+      pricingAreaType: result.areaType,
+      estimatedFare: result.estimatedFare,
+      pricing: result.pricing,
+    });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // إنشاء طلب رحلة جديد (REST)
 router.post("/ride-requests", authenticateToken, async (req, res) => {
@@ -58,6 +116,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     if (!Number.isFinite(dur)) dur = null;
 
     let estimatedFare = null;
+    let pricingAreaType = "mixed";
 
     console.log("[CREATE VIA REST] rider=", req.user?.id);
     console.log("[POST /ride-requests] distanceKm(body):", req.body.distanceKm);
@@ -67,69 +126,24 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     console.log("[POST /ride-requests] parsed dKm:", dKm, "parsed dur:", dur);
 
     try {
-      let pricing = await PricingSetting.findOne({
-        where: { serviceType },
-        order: [["createdAt", "DESC"]],
+      const fare = await calculateFare({
+        pickup,
+        dropoff,
+        distanceKm: dKm,
+        durationMin: dur,
+        serviceType,
       });
-      if (!pricing && serviceType === "super") {
-        pricing = await PricingSetting.findOne({
-          where: { serviceType: "ordinary" },
-          order: [["createdAt", "DESC"]],
-        });
-      }
+      estimatedFare = fare.estimatedFare;
+      pricingAreaType = fare.areaType;
 
       console.log("[POST /ride-requests] pricing:", {
-        baseFare: pricing?.baseFare,
-        pricePerKm: pricing?.pricePerKm,
-        pricePerMinute: pricing?.pricePerMinute,
-        minimumFare: pricing?.minimumFare,
+        serviceType,
+        pricingAreaType,
+        baseFare: fare.pricing?.baseFare,
+        pricePerKm: fare.pricing?.pricePerKm,
+        pricePerMinute: fare.pricing?.pricePerMinute,
+        minimumFare: fare.pricing?.minimumFare,
       });
-
-      console.log("[REST INPUT]", {
-        bodyDistanceKm: req.body.distanceKm,
-        pickupDistanceKm: pickup?.distanceKm,
-        parsed: dKm,
-      });
-
-      // default fallback (if no pricing record)
-      const DEFAULT_PRICING = {
-        baseFare: 2000,
-        pricePerKm: 500,
-        pricePerMinute: 0,
-        minimumFare: 3000,
-      };
-
-      const base =
-        pricing?.baseFare != null && Number.isFinite(parseFloat(pricing.baseFare))
-          ? parseFloat(pricing.baseFare)
-          : DEFAULT_PRICING.baseFare;
-
-      const perKm =
-        pricing?.pricePerKm != null && Number.isFinite(parseFloat(pricing.pricePerKm))
-          ? parseFloat(pricing.pricePerKm)
-          : DEFAULT_PRICING.pricePerKm;
-
-      const perMin =
-        pricing?.pricePerMinute != null && Number.isFinite(parseFloat(pricing.pricePerMinute))
-          ? parseFloat(pricing.pricePerMinute)
-          : DEFAULT_PRICING.pricePerMinute;
-
-      const minimum =
-        pricing?.minimumFare != null && Number.isFinite(parseFloat(pricing.minimumFare))
-          ? parseFloat(pricing.minimumFare)
-          : DEFAULT_PRICING.minimumFare;
-
-      if (dKm != null) {
-        const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
-        const afterMin = Math.max(minimum, beforeMin);
-
-        const rounded = Math.round(afterMin / 250) * 250;
-
-        estimatedFare = String(rounded);
-
-      } else {
-        console.log("[FARE CHECK REST] skipped: dKm is null");
-      }
     } catch (e) {
       console.error("[POST /ride-requests] pricing calc error:", e.message);
       // estimatedFare remains null
@@ -147,6 +161,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       durationMin: dur,
       estimatedFare,
       serviceType,
+      pricingAreaType,
       status: "pending",
     });
 
@@ -174,16 +189,40 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       attributes: ["id", "vehicleCategory"],
     });
     const driverCategoryById = new Map(driverRows.map((driver) => [String(driver.id), driver.vehicleCategory || "ordinary"]));
+    const previousGoodRatingsByDriver = await getPreviousGoodDriverRatings(user.id, driverIds);
 
     for (const did of driverIds) {
       if (!driverCanReceiveService(driverCategoryById.get(String(did)), serviceType)) continue;
 
+      const isOnline = await redisClient.sIsMember("drivers:online", String(did));
+      if (!isOnline) continue;
+
       const busyRideId = await redisClient.get(`driver:busy:${did}`);
       if (busyRideId) continue;
 
+      const previousRating = previousGoodRatingsByDriver.get(String(did));
+      const priorityMatch = previousRating != null;
+      const payload = priorityMatch
+        ? {
+            request: newReq,
+            priorityMatch: {
+              type: "previous_good_rating",
+              rating: previousRating,
+              title: previousGoodDriverMessage.title,
+              message: previousGoodDriverMessage.message,
+            },
+          }
+        : { request: newReq };
+
       await socketService
-        .notifyDriverSocket(did, "request:new", { request: newReq })
+        .notifyDriverSocket(did, "request:new", payload)
         .catch(() => {});
+
+      if (priorityMatch) {
+        notifications
+          .sendNotificationToUser(did, previousGoodDriverMessage.message, previousGoodDriverMessage.title)
+          .catch((e) => console.error("previous good driver push error:", e.message));
+      }
     }
 
     return res.json({ success: true, request: newReq });

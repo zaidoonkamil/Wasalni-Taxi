@@ -10,6 +10,7 @@ const OtpCode = require("./OtpCode");
 const PasswordResetOtp = require("./PasswordResetOtp");
 const Advertisement = require("./advertisement");
 const DriverRating = require("./driver_rating");
+const AreaPricingZone = require("./area_pricing_zone");
 
 User.hasMany(UserDevice, { foreignKey: "user_id", as: "devices", onDelete: "CASCADE" });
 UserDevice.belongsTo(User, { foreignKey: "user_id", as: "user" });
@@ -53,4 +54,5 @@ module.exports = {
   PasswordResetOtp,
   Advertisement,
   DriverRating,
+  AreaPricingZone,
 };

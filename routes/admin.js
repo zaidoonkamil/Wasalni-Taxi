@@ -1,11 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const { requireAdmin } = require("./user");
-const { PricingSetting, RideRequest, User } = require("../models");
+const { PricingSetting, RideRequest, User, AreaPricingZone } = require("../models");
 const { Op } = require("sequelize");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
+const { AREA_TYPES, SERVICE_TYPES, normalizeAreaType, normalizeServiceType } = require("../services/areaPricing");
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
   const category = driverCategory === "super" ? "super" : "ordinary";
@@ -16,20 +17,40 @@ const driverCanReceiveService = (driverCategory, serviceType) => {
 router.get("/admin/pricing", requireAdmin, async (req, res) => {
   try {
     const latest = await PricingSetting.findOne({ order: [["createdAt", "DESC"]] });
-    const ordinary = await PricingSetting.findOne({
-      where: { serviceType: "ordinary" },
-      order: [["createdAt", "DESC"]],
-    });
-    const superPricing = await PricingSetting.findOne({
-      where: { serviceType: "super" },
-      order: [["createdAt", "DESC"]],
-    });
+    const findLatest = (serviceType, areaType = "mixed") =>
+      PricingSetting.findOne({
+        where: { serviceType, areaType },
+        order: [["createdAt", "DESC"]],
+      });
+
+    const matrix = {};
+    for (const serviceType of SERVICE_TYPES) {
+      matrix[serviceType] = {};
+      for (const areaType of AREA_TYPES) {
+        matrix[serviceType][areaType] = await findLatest(serviceType, areaType);
+      }
+    }
+
+    const ordinary = matrix.ordinary.mixed || await findLatest("ordinary");
+    const superPricing = matrix.super.mixed || await findLatest("super");
 
     res.json({
       pricing: ordinary || latest || null,
       pricingByType: {
         ordinary: ordinary || latest || null,
         super: superPricing || ordinary || latest || null,
+      },
+      pricingByArea: {
+        ordinary: {
+          rich: matrix.ordinary.rich || matrix.ordinary.mixed || latest || null,
+          poor: matrix.ordinary.poor || matrix.ordinary.mixed || latest || null,
+          mixed: matrix.ordinary.mixed || latest || null,
+        },
+        super: {
+          rich: matrix.super.rich || matrix.super.mixed || matrix.ordinary.rich || matrix.ordinary.mixed || latest || null,
+          poor: matrix.super.poor || matrix.super.mixed || matrix.ordinary.poor || matrix.ordinary.mixed || latest || null,
+          mixed: matrix.super.mixed || matrix.ordinary.mixed || latest || null,
+        },
       },
     });
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
@@ -38,12 +59,14 @@ router.get("/admin/pricing", requireAdmin, async (req, res) => {
 // Update pricing (create new record)
 router.put("/admin/pricing", requireAdmin, async (req, res) => {
   try {
-    const { baseFare, pricePerKm, pricePerMinute, minimumFare, surgeEnabled, surgeMultiplier, serviceType = "ordinary" } = req.body;
-    if (!["ordinary", "super"].includes(serviceType)) return res.status(400).json({ error: "serviceType must be ordinary or super" });
+    const { baseFare, pricePerKm, pricePerMinute, minimumFare, surgeEnabled, surgeMultiplier } = req.body;
+    const serviceType = normalizeServiceType(req.body.serviceType);
+    const areaType = normalizeAreaType(req.body.areaType);
     if (baseFare == null || pricePerKm == null) return res.status(400).json({ error: "baseFare and pricePerKm are required" });
 
     const newRec = await PricingSetting.create({
       serviceType,
+      areaType,
       baseFare,
       pricePerKm,
       pricePerMinute: pricePerMinute != null ? pricePerMinute : null,
@@ -55,6 +78,83 @@ router.put("/admin/pricing", requireAdmin, async (req, res) => {
 
     res.json({ success: true, pricing: newRec });
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
+});
+
+router.get("/admin/area-zones", requireAdmin, async (req, res) => {
+  try {
+    const zones = await AreaPricingZone.findAll({ order: [["createdAt", "DESC"]] });
+    res.json({ zones });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post("/admin/area-zones", requireAdmin, async (req, res) => {
+  try {
+    const lat = Number(req.body.centerLat);
+    const lng = Number(req.body.centerLng);
+    const radius = parseInt(req.body.radiusMeters, 10);
+    const type = req.body.type === "poor" ? "poor" : "rich";
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ error: "centerLat and centerLng are required" });
+    }
+    if (!Number.isFinite(radius) || radius < 100) {
+      return res.status(400).json({ error: "radiusMeters must be 100 or more" });
+    }
+
+    const zone = await AreaPricingZone.create({
+      name: req.body.name || null,
+      type,
+      centerLat: lat,
+      centerLng: lng,
+      radiusMeters: radius,
+      active: req.body.active == null ? true : !!req.body.active,
+    });
+    res.json({ success: true, zone });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put("/admin/area-zones/:id", requireAdmin, async (req, res) => {
+  try {
+    const zone = await AreaPricingZone.findByPk(req.params.id);
+    if (!zone) return res.status(404).json({ error: "not_found" });
+
+    if (req.body.name !== undefined) zone.name = req.body.name || null;
+    if (req.body.type !== undefined) zone.type = req.body.type === "poor" ? "poor" : "rich";
+    if (req.body.centerLat !== undefined) zone.centerLat = Number(req.body.centerLat);
+    if (req.body.centerLng !== undefined) zone.centerLng = Number(req.body.centerLng);
+    if (req.body.radiusMeters !== undefined) zone.radiusMeters = parseInt(req.body.radiusMeters, 10);
+    if (req.body.active !== undefined) zone.active = !!req.body.active;
+
+    if (!Number.isFinite(Number(zone.centerLat)) || !Number.isFinite(Number(zone.centerLng))) {
+      return res.status(400).json({ error: "invalid center" });
+    }
+    if (!Number.isFinite(Number(zone.radiusMeters)) || Number(zone.radiusMeters) < 100) {
+      return res.status(400).json({ error: "radiusMeters must be 100 or more" });
+    }
+
+    await zone.save();
+    res.json({ success: true, zone });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.delete("/admin/area-zones/:id", requireAdmin, async (req, res) => {
+  try {
+    const zone = await AreaPricingZone.findByPk(req.params.id);
+    if (!zone) return res.status(404).json({ error: "not_found" });
+    await zone.destroy();
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Admin: list ride requests with filters
