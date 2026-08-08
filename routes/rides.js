@@ -28,6 +28,18 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "pickup and dropoff required" });
     }
 
+    const active = await RideRequest.findOne({
+      where: {
+        rider_id: user.id,
+        status: { [Op.in]: ["pending", "accepted", "arrived", "started"] },
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    if (active) {
+      return res.json({ success: true, request: active, activeAlreadyExists: true });
+    }
+
     // parse inputs
     const bodyDistance = req.body.distanceKm;
     const bodyDuration = req.body.durationMin;
