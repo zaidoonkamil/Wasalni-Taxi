@@ -211,19 +211,19 @@ const init = async (io) => {
         try {
           const driver = await User.findByPk(user.id);
           if (driver && (driver.isDebtBlocked || driver.status === "blocked" || driver.blockReason === "debt")) {
-            socket.emit("request:accept_failed", { reason: "debt_blocked" });
+            socket.emit("request:accept_failed", { requestId, reason: "debt_blocked" });
             return;
           }
 
           const lockKey = `order:lock:${requestId}`;
           const busy = await redisClient.get(`driver:busy:${user.id}`);
           if (busy) {
-            socket.emit("request:accept_failed", { reason: "driver_busy", activeRequestId: busy });
+            socket.emit("request:accept_failed", { requestId, reason: "driver_busy", activeRequestId: busy });
             return;
           }
           const locked = await redisService.setLock(lockKey, String(user.id), 12);
           if (!locked) {
-            socket.emit("request:accept_failed", { reason: "already_taken" });
+            socket.emit("request:accept_failed", { requestId, reason: "already_taken" });
             return;
           }
 
@@ -234,19 +234,19 @@ const init = async (io) => {
             if (!req) {
               await t.rollback();
               await redisService.releaseLock(lockKey, String(user.id));
-              socket.emit("request:accept_failed", { reason: "not_found" });
+              socket.emit("request:accept_failed", { requestId, reason: "not_found" });
               return;
             }
             if (req.status !== "pending") {
               await t.rollback();
               await redisService.releaseLock(lockKey, String(user.id));
-              socket.emit("request:accept_failed", { reason: "not_pending" });
+              socket.emit("request:accept_failed", { requestId, reason: "not_pending" });
               return;
             }
             if (!driverCanReceiveService(driver?.vehicleCategory, req.serviceType || "ordinary")) {
               await t.rollback();
               await redisService.releaseLock(lockKey, String(user.id));
-              socket.emit("request:accept_failed", { reason: "service_type_not_allowed" });
+              socket.emit("request:accept_failed", { requestId, reason: "service_type_not_allowed" });
               return;
             }
 
@@ -266,14 +266,31 @@ const init = async (io) => {
               try { await notifications.sendNotificationToUser(req.rider_id, 'ØªÙ… Ù‚Ø¨ÙˆÙ„ Ø·Ù„Ø¨Ùƒ', 'Ø³Ø§Ø¦Ù‚ ÙÙŠ Ø§Ù„Ø·Ø±ÙŠÙ‚'); } catch (e) {}
             }
 
-            // notify other drivers to close (best-effort)
-            // remove lock keeps others from accepting
+            const sentKey = `request:sent_to:${req.id}`;
+            try {
+              const sentDriverIds = await redisClient.sMembers(sentKey);
+              for (const did of sentDriverIds) {
+                if (String(did) === String(user.id)) continue;
+                const sid = await redisClient.get(`socket:driver:${did}`);
+                if (sid && ioInstance) {
+                  ioInstance.to(sid).emit("request:taken", {
+                    requestId: req.id,
+                    driverId: user.id,
+                    status: "accepted",
+                  });
+                }
+              }
+              await redisClient.del(sentKey);
+              await redisClient.del(`request:rejected:${req.id}`);
+            } catch (notifyErr) {
+              console.error("notify request:taken error", notifyErr.message);
+            }
 
             socket.emit("request:accepted", payload);
           } catch (e) {
             await t.rollback();
             await redisService.releaseLock(lockKey, String(user.id));
-            socket.emit("request:accept_failed", { reason: "error", details: e.message });
+            socket.emit("request:accept_failed", { requestId, reason: "error", details: e.message });
           }
         } catch (e) {
           console.error("accept error", e.message);
