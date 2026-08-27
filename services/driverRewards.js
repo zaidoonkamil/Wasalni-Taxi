@@ -2,7 +2,8 @@ const { DriverRewardLedger, DriverDebtLedger } = require("../models");
 const redisService = require("./redis");
 
 const parseAmount = (value) => {
-  const amount = parseFloat(value || 0);
+  const normalized = String(value || 0).replace(/[,\u066C\s]/g, "");
+  const amount = parseFloat(normalized);
   return Number.isFinite(amount) ? amount : 0;
 };
 

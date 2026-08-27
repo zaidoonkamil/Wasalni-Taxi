@@ -51,6 +51,12 @@ const applyDriverDebtPayment = async ({ driver, amount, note, adminId, transacti
   return driver;
 };
 
+const parseMoneyAmount = (value) => {
+  const normalized = String(value || 0).replace(/[,\u066C\s]/g, "");
+  const amount = parseFloat(normalized);
+  return Number.isFinite(amount) ? amount : 0;
+};
+
 const notifyDriverDebtUpdated = async (driver, amount) => {
   try {
     const sid = await redisService.client().get(`socket:driver:${driver.id}`);
@@ -66,14 +72,17 @@ const notifyDriverRewardGranted = async (driver, amount) => {
   const title = "مكافأة جديدة";
   const message = `تمت إضافة مكافأة إلى حسابك بقيمة ${amount} د.ع. سيتم خصم عمولات رحلاتك منها قبل احتساب أي دين.`;
   try {
-    const ok = await socketService.notifyDriverSocket(driver.id, "driver:reward_updated", {
+    await socketService.notifyDriverSocket(driver.id, "driver:reward_updated", {
       rewardBalance: driver.driverRewardBalance,
       title,
       message,
     });
-    if (!ok) await notifications.sendNotificationToUser(driver.id, message, title);
+  } catch (e) {}
+
+  try {
+    await notifications.sendNotificationToUser(driver.id, message, title);
   } catch (e) {
-    try { await notifications.sendNotificationToUser(driver.id, message, title); } catch (_) {}
+    console.error(`❌ Error sending reward notification to driver ${driver.id}:`, e.message);
   }
 };
 
@@ -173,7 +182,7 @@ router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) =
   try {
     const driverId = req.params.id;
     const { amount, note } = req.body;
-    const parsed = parseFloat(amount || 0);
+    const parsed = parseMoneyAmount(amount);
     if (!Number.isFinite(parsed) || parsed <= 0) {
       await t.rollback();
       return res.status(400).json({ error: "Invalid amount" });
@@ -185,7 +194,7 @@ router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) =
       return res.status(404).json({ error: "driver_not_found" });
     }
 
-    await grantDriverReward({
+    const rewardResult = await grantDriverReward({
       driver,
       amount: parsed,
       note: note || "admin reward",
@@ -196,7 +205,15 @@ router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) =
     await t.commit();
     await notifyDriverRewardGranted(driver, parsed);
 
-    res.json({ success: true, driver });
+    res.json({
+      success: true,
+      driver,
+      reward: {
+        granted: rewardResult.granted,
+        previousBalance: rewardResult.previousBalance,
+        balance: rewardResult.nextBalance,
+      },
+    });
   } catch (e) {
     await t.rollback();
     console.error(e.message);
@@ -208,7 +225,7 @@ router.post("/admin/drivers/rewards/grant-bulk", requireAdmin, async (req, res) 
   const t = await User.sequelize.transaction();
   try {
     const { amount, note, driverIds, allDrivers } = req.body;
-    const parsed = parseFloat(amount || 0);
+    const parsed = parseMoneyAmount(amount);
     if (!Number.isFinite(parsed) || parsed <= 0) {
       await t.rollback();
       return res.status(400).json({ error: "Invalid amount" });
@@ -227,13 +244,20 @@ router.post("/admin/drivers/rewards/grant-bulk", requireAdmin, async (req, res) 
     }
 
     const drivers = await User.findAll({ where, transaction: t, lock: t.LOCK.UPDATE });
+    const rewards = [];
     for (const driver of drivers) {
-      await grantDriverReward({
+      const rewardResult = await grantDriverReward({
         driver,
         amount: parsed,
         note: note || (allDrivers ? "admin reward for all drivers" : "admin reward for selected drivers"),
         adminId: req.user.id,
         transaction: t,
+      });
+      rewards.push({
+        driverId: driver.id,
+        granted: rewardResult.granted,
+        previousBalance: rewardResult.previousBalance,
+        balance: rewardResult.nextBalance,
       });
     }
 
@@ -242,7 +266,7 @@ router.post("/admin/drivers/rewards/grant-bulk", requireAdmin, async (req, res) 
       await notifyDriverRewardGranted(driver, parsed);
     }
 
-    res.json({ success: true, affected: drivers.length, drivers });
+    res.json({ success: true, affected: drivers.length, drivers, rewards });
   } catch (e) {
     await t.rollback();
     console.error(e.message);
