@@ -2,10 +2,11 @@ const express = require("express");
 const router = express.Router();
 const { Op } = require("sequelize");
 const { requireAdmin } = require("./user");
-const { User, SystemSetting, DriverDebtLedger } = require("../models");
+const { User, SystemSetting, DriverDebtLedger, DriverRewardLedger } = require("../models");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
+const { grantDriverReward } = require("../services/driverRewards");
 
 // helper to get setting value
 const getSetting = async (key) => {
@@ -59,6 +60,21 @@ const notifyDriverDebtUpdated = async (driver, amount) => {
       await notifications.sendNotificationToUser(driver.id, `تم سداد جزء من مديونيتك: ${amount}`);
     }
   } catch (e) {}
+};
+
+const notifyDriverRewardGranted = async (driver, amount) => {
+  const title = "مكافأة جديدة";
+  const message = `تمت إضافة مكافأة إلى حسابك بقيمة ${amount} د.ع. سيتم خصم عمولات رحلاتك منها قبل احتساب أي دين.`;
+  try {
+    const ok = await socketService.notifyDriverSocket(driver.id, "driver:reward_updated", {
+      rewardBalance: driver.driverRewardBalance,
+      title,
+      message,
+    });
+    if (!ok) await notifications.sendNotificationToUser(driver.id, message, title);
+  } catch (e) {
+    try { await notifications.sendNotificationToUser(driver.id, message, title); } catch (_) {}
+  }
 };
 
 // GET settings
@@ -132,7 +148,7 @@ router.get("/admin/drivers/debts", requireAdmin, async (req, res) => {
     const where = { role: "driver" };
     if (minDebt != null) where.driverDebt = { [Op.gte]: minDebt };
     const offset = (page - 1) * limit;
-    const { count, rows } = await User.findAndCountAll({ where, attributes: ["id", "name", "phone", "driverDebt", "isDebtBlocked", "blockReason", "status"], limit, offset, order: [["driverDebt", "DESC"]] });
+    const { count, rows } = await User.findAndCountAll({ where, attributes: ["id", "name", "phone", "driverDebt", "driverRewardBalance", "isDebtBlocked", "blockReason", "status"], limit, offset, order: [["driverDebt", "DESC"]] });
     res.json({ total: count, page, totalPages: Math.ceil(count / limit), drivers: rows });
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
 });
@@ -144,11 +160,94 @@ router.get("/admin/drivers/:id/debt", requireAdmin, async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 30;
     const offset = (page - 1) * limit;
-    const driver = await User.findByPk(driverId, { attributes: ["id", "name", "phone", "driverDebt", "isDebtBlocked", "blockReason"] });
+    const driver = await User.findByPk(driverId, { attributes: ["id", "name", "phone", "driverDebt", "driverRewardBalance", "isDebtBlocked", "blockReason"] });
     if (!driver) return res.status(404).json({ error: "not_found" });
     const { count, rows } = await DriverDebtLedger.findAndCountAll({ where: { driver_id: driverId }, limit, offset, order: [["createdAt", "DESC"]] });
-    res.json({ driver, total: count, page, totalPages: Math.ceil(count / limit), ledger: rows });
+    const rewardLedger = await DriverRewardLedger.findAll({ where: { driver_id: driverId }, limit, offset, order: [["createdAt", "DESC"]] });
+    res.json({ driver, total: count, page, totalPages: Math.ceil(count / limit), ledger: rows, rewardLedger });
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
+});
+
+router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) => {
+  const t = await User.sequelize.transaction();
+  try {
+    const driverId = req.params.id;
+    const { amount, note } = req.body;
+    const parsed = parseFloat(amount || 0);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      await t.rollback();
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    const driver = await User.findByPk(driverId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!driver || driver.role !== "driver") {
+      await t.rollback();
+      return res.status(404).json({ error: "driver_not_found" });
+    }
+
+    await grantDriverReward({
+      driver,
+      amount: parsed,
+      note: note || "admin reward",
+      adminId: req.user.id,
+      transaction: t,
+    });
+
+    await t.commit();
+    await notifyDriverRewardGranted(driver, parsed);
+
+    res.json({ success: true, driver });
+  } catch (e) {
+    await t.rollback();
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post("/admin/drivers/rewards/grant-bulk", requireAdmin, async (req, res) => {
+  const t = await User.sequelize.transaction();
+  try {
+    const { amount, note, driverIds, allDrivers } = req.body;
+    const parsed = parseFloat(amount || 0);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      await t.rollback();
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    const where = { role: "driver" };
+    if (!allDrivers) {
+      const ids = Array.isArray(driverIds)
+        ? driverIds.map((id) => parseInt(id, 10)).filter((id) => Number.isInteger(id))
+        : [];
+      if (ids.length === 0) {
+        await t.rollback();
+        return res.status(400).json({ error: "driverIds required" });
+      }
+      where.id = { [Op.in]: ids };
+    }
+
+    const drivers = await User.findAll({ where, transaction: t, lock: t.LOCK.UPDATE });
+    for (const driver of drivers) {
+      await grantDriverReward({
+        driver,
+        amount: parsed,
+        note: note || (allDrivers ? "admin reward for all drivers" : "admin reward for selected drivers"),
+        adminId: req.user.id,
+        transaction: t,
+      });
+    }
+
+    await t.commit();
+    for (const driver of drivers) {
+      await notifyDriverRewardGranted(driver, parsed);
+    }
+
+    res.json({ success: true, affected: drivers.length, drivers });
+  } catch (e) {
+    await t.rollback();
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // POST pay debt

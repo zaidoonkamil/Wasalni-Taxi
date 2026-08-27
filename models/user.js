@@ -84,6 +84,7 @@ const User = sequelize.define("User",{
     },
 
     driverDebt: { type: DataTypes.DECIMAL(14,2), allowNull: false, defaultValue: 0 },
+    driverRewardBalance: { type: DataTypes.DECIMAL(14,2), allowNull: false, defaultValue: 0 },
     driverDebtLimitOverride: { type: DataTypes.DECIMAL(14,2), allowNull: true, defaultValue: null },
     isDebtBlocked: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     blockReason: { type: DataTypes.STRING, allowNull: true, defaultValue: null },

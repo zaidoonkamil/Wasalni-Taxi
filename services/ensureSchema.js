@@ -16,6 +16,12 @@ const ensureSchema = async () => {
     defaultValue: "ordinary",
   });
 
+  await addColumnIfMissing("Users", "driverRewardBalance", {
+    type: DataTypes.DECIMAL(14, 2),
+    allowNull: false,
+    defaultValue: 0,
+  });
+
   await addColumnIfMissing("ride_requests", "serviceType", {
     type: DataTypes.ENUM("ordinary", "super"),
     allowNull: false,

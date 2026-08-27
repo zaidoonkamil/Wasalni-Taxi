@@ -1,10 +1,11 @@
-const jwt = require("jsonwebtoken");
+﻿const jwt = require("jsonwebtoken");
 const redisService = require("./redis");
 const { User, RideRequest, SystemSetting, DriverDebtLedger, DriverRating } = require("../models");
 const sequelize = require("../config/db");
 const notifications = require("./notifications") || require("../services/notifications");
 const { Op } = require("sequelize");
 const { calculateFare, normalizeServiceType } = require("./areaPricing");
+const { applyCommissionWithReward } = require("./driverRewards");
 
 let ioInstance = null;
 
@@ -26,8 +27,8 @@ const driverCanReceiveService = (driverCategory, serviceType) => {
 };
 
 const previousGoodDriverMessage = {
-  title: "زبون يعرفك يطلب رحلة",
-  message: "أحد الزبائن الذين أوصلتهم سابقاً وقيّم رحلتك بشكل جيد يطلب تكسي الآن بالقرب منك.",
+  title: "Ø²Ø¨ÙˆÙ† ÙŠØ¹Ø±ÙÙƒ ÙŠØ·Ù„Ø¨ Ø±Ø­Ù„Ø©",
+  message: "Ø£Ø­Ø¯ Ø§Ù„Ø²Ø¨Ø§Ø¦Ù† Ø§Ù„Ø°ÙŠÙ† Ø£ÙˆØµÙ„ØªÙ‡Ù… Ø³Ø§Ø¨Ù‚Ø§Ù‹ ÙˆÙ‚ÙŠÙ‘Ù… Ø±Ø­Ù„ØªÙƒ Ø¨Ø´ÙƒÙ„ Ø¬ÙŠØ¯ ÙŠØ·Ù„Ø¨ ØªÙƒØ³ÙŠ Ø§Ù„Ø¢Ù† Ø¨Ø§Ù„Ù‚Ø±Ø¨ Ù…Ù†Ùƒ.",
 };
 
 const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
@@ -92,7 +93,7 @@ const init = async (io) => {
           await refreshSocketKey();
         });
         
-        // رفض الطلب من قبل السائق
+        // Ø±ÙØ¶ Ø§Ù„Ø·Ù„Ø¨ Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø³Ø§Ø¦Ù‚
       socket.on("driver:reject_request", async ({ requestId }) => {
         try {
           if (!requestId) return;
@@ -122,7 +123,7 @@ const init = async (io) => {
           }
       });
 
-      // اتصال السائق
+      // Ø§ØªØµØ§Ù„ Ø§Ù„Ø³Ø§Ø¦Ù‚
       socket.on("driver:online", async () => {
         try {
           const isDebtBlocked = await redisClient.sIsMember("drivers:debt_blocked", String(user.id));
@@ -133,7 +134,7 @@ const init = async (io) => {
           await redisClient.set(`driver:state:${user.id}`, "online", { EX: 3600 });
           await redisClient.sAdd("drivers:online", String(user.id));
           await redisClient.set(socketKey, socket.id, { EX: 3600 });
-          console.log("🟢 driver online:", user.id);
+          console.log("ðŸŸ¢ driver online:", user.id);
         } catch (e) {
           console.error("driver:online error", e.message);
         }
@@ -146,7 +147,7 @@ const init = async (io) => {
         try { await redisClient.del(`driver:loc:${user.id}`); } catch (e) {}
       });
 
-      // تحديث موقع السائق
+      // ØªØ­Ø¯ÙŠØ« Ù…ÙˆÙ‚Ø¹ Ø§Ù„Ø³Ø§Ø¦Ù‚
       socket.on("driver:location", async (data, ack) => {
         try {
           const now = Date.now();
@@ -205,7 +206,7 @@ const init = async (io) => {
       });
 
 
-      // قبول طلب الرحلة من قبل السائق
+      // Ù‚Ø¨ÙˆÙ„ Ø·Ù„Ø¨ Ø§Ù„Ø±Ø­Ù„Ø© Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø³Ø§Ø¦Ù‚
       socket.on("driver:accept_request", async ({ requestId }) => {
         try {
           const driver = await User.findByPk(user.id);
@@ -262,7 +263,7 @@ const init = async (io) => {
               ioInstance.to(riderSocketId).emit("request:accepted", payload);
             } else {
               // offline -> send push
-              try { await notifications.sendNotificationToUser(req.rider_id, 'تم قبول طلبك', 'سائق في الطريق'); } catch (e) {}
+              try { await notifications.sendNotificationToUser(req.rider_id, 'ØªÙ… Ù‚Ø¨ÙˆÙ„ Ø·Ù„Ø¨Ùƒ', 'Ø³Ø§Ø¦Ù‚ ÙÙŠ Ø§Ù„Ø·Ø±ÙŠÙ‚'); } catch (e) {}
             }
 
             // notify other drivers to close (best-effort)
@@ -279,7 +280,7 @@ const init = async (io) => {
         }
       });
 
-      // وصول السائق
+      // ÙˆØµÙˆÙ„ Ø§Ù„Ø³Ø§Ø¦Ù‚
       socket.on("driver:arrived", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -294,8 +295,8 @@ const init = async (io) => {
           try {
             await notifications.sendNotificationToUser(
               req.rider_id,
-              "السائق وصل موقعك",
-              "الكابتن وصل لموقعك، تقدر تطلع هسه"
+              "Ø§Ù„Ø³Ø§Ø¦Ù‚ ÙˆØµÙ„ Ù…ÙˆÙ‚Ø¹Ùƒ",
+              "Ø§Ù„ÙƒØ§Ø¨ØªÙ† ÙˆØµÙ„ Ù„Ù…ÙˆÙ‚Ø¹ÙƒØŒ ØªÙ‚Ø¯Ø± ØªØ·Ù„Ø¹ Ù‡Ø³Ù‡"
             );
           } catch (e) {
             console.error("arrived push error:", e.message);
@@ -307,7 +308,7 @@ const init = async (io) => {
       });
 
 
-      // بدء الرحلة
+      // Ø¨Ø¯Ø¡ Ø§Ù„Ø±Ø­Ù„Ø©
       socket.on("driver:start_trip", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -320,7 +321,7 @@ const init = async (io) => {
         } catch (e) { console.error(e.message); }
       });
 
-      // إنهاء الرحلة
+      // Ø¥Ù†Ù‡Ø§Ø¡ Ø§Ù„Ø±Ø­Ù„Ø©
       socket.on("driver:end_trip", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -365,39 +366,31 @@ const init = async (io) => {
                 }
 
                 if (commissionAmount > 0) {
-                  const prevDebt = parseFloat(driver.driverDebt || 0);
-                  const newDebt = prevDebt + commissionAmount;
-                  driver.driverDebt = newDebt;
-
-                  // determine limit: override or system
                   const limit = driver.driverDebtLimitOverride != null ? parseFloat(driver.driverDebtLimitOverride) : (systemLimit != null ? systemLimit : null);
+                  const rewardResult = await applyCommissionWithReward({
+                    driver,
+                    rideRequestId: req.id,
+                    commissionAmount,
+                    debtLimit: limit,
+                    transaction: t,
+                  });
 
-                  // add ledger
-                  await DriverDebtLedger.create({ driver_id: driver.id, ride_request_id: req.id, type: "charge", amount: commissionAmount, note: "commission on completed ride" }, { transaction: t });
-
-                  // block if reached limit
-                  if (limit != null && newDebt >= limit) {
-                    driver.isDebtBlocked = true;
-                    driver.blockReason = "debt";
-
-                    await redisClient.sAdd("drivers:debt_blocked", String(driver.id));
-
-                    try {
-                      await redisClient.del(`driver:state:${driver.id}`);
-                      await redisClient.sRem("drivers:online", String(driver.id));
-                      await redisClient.sendCommand(["ZREM", "drivers:geo", String(driver.id)]);
-                      await redisClient.del(`driver:loc:${driver.id}`);
-                    } catch (e) {}
-                    // notify driver via socket or push
-                    try {
-                      const sid = await redisClient.get(`socket:driver:${driver.id}`);
-                      const payload2 = { debt: newDebt, limit };
+                  try {
+                    const sid = await redisClient.get(`socket:driver:${driver.id}`);
+                    const payload2 = {
+                      debt: rewardResult.debt,
+                      rewardBalance: rewardResult.rewardBalance,
+                      usedReward: rewardResult.usedReward,
+                      addedDebt: rewardResult.addedDebt,
+                      limit,
+                    };
+                    if (driver.isDebtBlocked) {
                       if (sid && ioInstance) ioInstance.to(sid).emit("driver:debt_blocked", payload2);
                       else await notifications.sendNotificationToUser(driver.id, `تم حظرك بسبب تجاوز حد الدين ${limit}`);
-                    } catch (e) {}
-                  }
-
-                  await driver.save({ transaction: t });
+                    } else if (sid && ioInstance) {
+                      ioInstance.to(sid).emit("driver:debt_updated", payload2);
+                    }
+                  } catch (e) {}
                 }
               }
               await t.commit();
@@ -412,7 +405,7 @@ const init = async (io) => {
         } catch (e) { console.error(e.message); }
       });
 
-      //  إنشاء طلب الرحلة من قبل الراكب
+      //  Ø¥Ù†Ø´Ø§Ø¡ Ø·Ù„Ø¨ Ø§Ù„Ø±Ø­Ù„Ø© Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø±Ø§ÙƒØ¨
       socket.on("rider:create_request", async (data, ack) => {
         const t = await sequelize.transaction();
         try {
@@ -436,11 +429,11 @@ const init = async (io) => {
 
           if (active) {
             await t.rollback();
-            console.log("⚠️ active ride exists id=", active.id, "status=", active.status);
+            console.log("âš ï¸ active ride exists id=", active.id, "status=", active.status);
             return ack && ack({
               ok: false,
               error: "active_ride_exists",
-              message: "عندك رحلة/طلب فعال مسبقاً",
+              message: "Ø¹Ù†Ø¯Ùƒ Ø±Ø­Ù„Ø©/Ø·Ù„Ø¨ ÙØ¹Ø§Ù„ Ù…Ø³Ø¨Ù‚Ø§Ù‹",
               activeRequestId: active.id,
               status: active.status,
             });
@@ -508,7 +501,7 @@ const init = async (io) => {
               "ASC",
             ])
             .catch((e) => {
-              console.error("❌ GEORADIUS error", e.message);
+              console.error("âŒ GEORADIUS error", e.message);
               return [];
             });
 
@@ -573,7 +566,7 @@ const init = async (io) => {
 
           await redisClient.expire(sentKey, 3600);
 
-          console.log("📤 done matching. sentCount=", sentCount);
+          console.log("ðŸ“¤ done matching. sentCount=", sentCount);
 
           return ack && ack({
             ok: true,
@@ -585,13 +578,13 @@ const init = async (io) => {
           try {
             await t.rollback();
           } catch (_) {}
-          console.error("❌ rider:create_request", e.message);
+          console.error("âŒ rider:create_request", e.message);
           return ack && ack({ ok: false, error: e.message });
         }
       });
 
 
-      // إلغاء طلب الرحلة من قبل الراكب
+      // Ø¥Ù„ØºØ§Ø¡ Ø·Ù„Ø¨ Ø§Ù„Ø±Ø­Ù„Ø© Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø±Ø§ÙƒØ¨
       socket.on("rider:cancel_request", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -641,7 +634,7 @@ const init = async (io) => {
   });
 };
 
-// اخبار السائق عبر السوكت
+// Ø§Ø®Ø¨Ø§Ø± Ø§Ù„Ø³Ø§Ø¦Ù‚ Ø¹Ø¨Ø± Ø§Ù„Ø³ÙˆÙƒØª
 const notifyDriverSocket = async (driverId, event, payload) => {
   if (!ioInstance) return false;
   const redisClient = redisService.client();
@@ -650,7 +643,7 @@ const notifyDriverSocket = async (driverId, event, payload) => {
   return !!sid;
 };
 
-// اخبار الراكب عبر السوكت
+// Ø§Ø®Ø¨Ø§Ø± Ø§Ù„Ø±Ø§ÙƒØ¨ Ø¹Ø¨Ø± Ø§Ù„Ø³ÙˆÙƒØª
 const notifyRiderSocket = async (riderId, event, payload) => {
   if (!ioInstance) return false;
   const redisClient = redisService.client();
