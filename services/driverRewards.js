@@ -28,7 +28,13 @@ const grantDriverReward = async ({ driver, amount, note, adminId, transaction })
   );
 
   await driver.save({ transaction });
-  return { driver, granted: parsed, previousBalance, nextBalance };
+  await driver.reload({ transaction });
+  return {
+    driver,
+    granted: parsed,
+    previousBalance,
+    nextBalance: parseAmount(driver.driverRewardBalance),
+  };
 };
 
 const applyCommissionWithReward = async ({

@@ -86,6 +86,40 @@ const notifyDriverRewardGranted = async (driver, amount) => {
   }
 };
 
+router.get("/driver/financial-summary", async (req, res) => {
+  try {
+    const token = req.headers.authorization;
+    if (!token) return res.status(401).json({ error: "Token is missing" });
+
+    const jwt = require("jsonwebtoken");
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const driver = await User.findByPk(decoded.id, {
+      attributes: [
+        "id",
+        "role",
+        "driverDebt",
+        "driverRewardBalance",
+        "isDebtBlocked",
+        "blockReason",
+      ],
+    });
+
+    if (!driver || driver.role !== "driver") {
+      return res.status(404).json({ error: "driver_not_found" });
+    }
+
+    return res.json({
+      driverDebt: driver.driverDebt || "0",
+      driverRewardBalance: driver.driverRewardBalance || "0",
+      isDebtBlocked: !!driver.isDebtBlocked,
+      blockReason: driver.blockReason,
+    });
+  } catch (e) {
+    console.error("driver financial summary error:", e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // GET settings
 router.get("/admin/debt/settings", async (req, res) => {
   try {
@@ -202,8 +236,15 @@ router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) =
       transaction: t,
     });
 
+    const savedRewardBalance = rewardResult.nextBalance;
+    const savedDriverDebt = driver.driverDebt;
+
     await t.commit();
     await notifyDriverRewardGranted(driver, parsed);
+
+    console.log(
+      `🎁 Driver reward granted driver=${driver.id} amount=${parsed} previous=${rewardResult.previousBalance} balance=${savedRewardBalance} debt=${savedDriverDebt}`
+    );
 
     res.json({
       success: true,
@@ -211,7 +252,8 @@ router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) =
       reward: {
         granted: rewardResult.granted,
         previousBalance: rewardResult.previousBalance,
-        balance: rewardResult.nextBalance,
+        balance: savedRewardBalance,
+        driverDebt: savedDriverDebt,
       },
     });
   } catch (e) {
