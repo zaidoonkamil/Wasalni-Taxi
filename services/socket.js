@@ -22,8 +22,7 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 }
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
-  const category = driverCategory === "super" ? "super" : "ordinary";
-  return serviceType === "ordinary" || category === "super";
+  return true;
 };
 
 const previousGoodDriverMessage = {

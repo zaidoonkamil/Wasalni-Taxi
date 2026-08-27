@@ -13,8 +13,7 @@ function roundUpTo250(amount) {
 }
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
-  const category = driverCategory === "super" ? "super" : "ordinary";
-  return serviceType === "ordinary" || category === "super";
+  return true;
 };
 
 const previousGoodDriverMessage = {
