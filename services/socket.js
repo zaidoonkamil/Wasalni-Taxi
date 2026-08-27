@@ -457,6 +457,7 @@ const init = async (io) => {
 
           let estimatedFare = null;
           let pricingAreaType = "mixed";
+          let pricingZoneId = null;
 
           const serverKm =
             pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
@@ -478,6 +479,7 @@ const init = async (io) => {
             });
             estimatedFare = fare.estimatedFare;
             pricingAreaType = fare.areaType;
+            pricingZoneId = fare.pricingZone?.id || null;
           } catch (e) {
             console.error("pricing calc error:", e.message);
           }
@@ -496,6 +498,7 @@ const init = async (io) => {
               estimatedFare,
               serviceType,
               pricingAreaType,
+              pricingZoneId,
               status: "pending",
             },
             { transaction: t }

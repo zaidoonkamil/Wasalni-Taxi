@@ -41,29 +41,53 @@ function matchZone(point, zones) {
     const radius = Number(zone.radiusMeters || 0);
     if (radius <= 0 || distance > radius) continue;
     if (!selected || distance < selected.distance) {
-      selected = { type: zone.type, distance };
+      selected = { zone, distance };
     }
   }
-  return selected?.type || null;
+  return selected?.zone || null;
 }
 
-async function resolveTripAreaType(pickup, dropoff) {
+async function resolveTripPricingZone(pickup, dropoff, transaction) {
   const pickupPoint = parsePoint(pickup);
   const dropoffPoint = parsePoint(dropoff);
-  if (!pickupPoint || !dropoffPoint) return "mixed";
+  if (!pickupPoint || !dropoffPoint) return null;
 
   const zones = await AreaPricingZone.findAll({
     where: { active: true },
-    attributes: ["type", "centerLat", "centerLng", "radiusMeters"],
+    attributes: [
+      "id",
+      "name",
+      "centerLat",
+      "centerLng",
+      "radiusMeters",
+      "ordinaryPricePerKm",
+      "superPricePerKm",
+    ],
+    ...(transaction ? { transaction } : {}),
     raw: true,
   });
 
-  const pickupType = matchZone(pickupPoint, zones);
-  const dropoffType = matchZone(dropoffPoint, zones);
+  const pickupZone = matchZone(pickupPoint, zones);
+  const dropoffZone = matchZone(dropoffPoint, zones);
 
-  if (pickupType === "rich" && dropoffType === "rich") return "rich";
-  if (pickupType === "poor" && dropoffType === "poor") return "poor";
+  if (pickupZone && dropoffZone && Number(pickupZone.id) === Number(dropoffZone.id)) {
+    return pickupZone;
+  }
+  return null;
+}
+
+async function resolveTripAreaType() {
   return "mixed";
+}
+
+function zonePricePerKm(zone, serviceType) {
+  if (!zone) return null;
+  const value =
+    normalizeServiceType(serviceType) === "super"
+      ? zone.superPricePerKm ?? zone.ordinaryPricePerKm
+      : zone.ordinaryPricePerKm;
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 async function findPricingSetting(serviceType, areaType, transaction) {
@@ -94,8 +118,11 @@ async function findPricingSetting(serviceType, areaType, transaction) {
 }
 
 async function calculateFare({ pickup, dropoff, distanceKm, durationMin, serviceType, transaction }) {
-  const areaType = await resolveTripAreaType(pickup, dropoff);
-  const pricing = await findPricingSetting(serviceType, areaType, transaction);
+  const normalizedService = normalizeServiceType(serviceType);
+  const pricingZone = await resolveTripPricingZone(pickup, dropoff, transaction);
+  const areaType = "mixed";
+  const pricing = await findPricingSetting(normalizedService, areaType, transaction);
+  const zonePerKm = zonePricePerKm(pricingZone, normalizedService);
 
   const dKm = Number.isFinite(Number(distanceKm)) ? Number(distanceKm) : null;
   const dur = Number.isFinite(Number(durationMin)) ? Number(durationMin) : null;
@@ -115,11 +142,22 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
       ? parseFloat(pricing.minimumFare)
       : DEFAULT_PRICING.minimumFare;
 
-    const beforeMin = base + dKm * perKm + (dur != null ? dur * perMin : 0);
+    const beforeMin = base + dKm * (zonePerKm ?? perKm) + (dur != null ? dur * perMin : 0);
     estimatedFare = String(Math.round(Math.max(minimum, beforeMin) / 250) * 250);
   }
 
-  return { areaType, pricing, estimatedFare };
+  return {
+    areaType,
+    pricing,
+    pricingZone: pricingZone && zonePerKm != null
+      ? {
+          id: pricingZone.id,
+          name: pricingZone.name,
+          pricePerKm: zonePerKm,
+        }
+      : null,
+    estimatedFare,
+  };
 }
 
 module.exports = {
@@ -129,6 +167,7 @@ module.exports = {
   normalizeAreaType,
   normalizeServiceType,
   resolveTripAreaType,
+  resolveTripPricingZone,
   findPricingSetting,
   calculateFare,
 };

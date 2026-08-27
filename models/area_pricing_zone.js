@@ -13,6 +13,8 @@ const AreaPricingZone = sequelize.define(
     centerLat: { type: DataTypes.DECIMAL(10, 7), allowNull: false },
     centerLng: { type: DataTypes.DECIMAL(10, 7), allowNull: false },
     radiusMeters: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1000 },
+    ordinaryPricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
+    superPricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
     active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   },
   {

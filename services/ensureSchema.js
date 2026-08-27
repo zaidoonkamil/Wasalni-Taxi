@@ -34,6 +34,12 @@ const ensureSchema = async () => {
     defaultValue: "mixed",
   });
 
+  await addColumnIfMissing("ride_requests", "pricingZoneId", {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  });
+
   await addColumnIfMissing("pricing_settings", "serviceType", {
     type: DataTypes.ENUM("ordinary", "super"),
     allowNull: false,
@@ -44,6 +50,16 @@ const ensureSchema = async () => {
     type: DataTypes.ENUM("rich", "poor", "mixed"),
     allowNull: false,
     defaultValue: "mixed",
+  });
+
+  await addColumnIfMissing("area_pricing_zones", "ordinaryPricePerKm", {
+    type: DataTypes.DECIMAL(10, 3),
+    allowNull: true,
+  });
+
+  await addColumnIfMissing("area_pricing_zones", "superPricePerKm", {
+    type: DataTypes.DECIMAL(10, 3),
+    allowNull: true,
   });
 };
 

@@ -65,6 +65,7 @@ router.post("/ride-requests/estimate", authenticateToken, async (req, res) => {
       success: true,
       serviceType,
       pricingAreaType: result.areaType,
+      pricingZone: result.pricingZone,
       estimatedFare: result.estimatedFare,
       pricing: result.pricing,
     });
@@ -116,6 +117,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
 
     let estimatedFare = null;
     let pricingAreaType = "mixed";
+    let pricingZoneId = null;
 
     console.log("[CREATE VIA REST] rider=", req.user?.id);
     console.log("[POST /ride-requests] distanceKm(body):", req.body.distanceKm);
@@ -134,10 +136,13 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       });
       estimatedFare = fare.estimatedFare;
       pricingAreaType = fare.areaType;
+      pricingZoneId = fare.pricingZone?.id || null;
 
       console.log("[POST /ride-requests] pricing:", {
         serviceType,
         pricingAreaType,
+        pricingZoneId,
+        zonePricePerKm: fare.pricingZone?.pricePerKm,
         baseFare: fare.pricing?.baseFare,
         pricePerKm: fare.pricing?.pricePerKm,
         pricePerMinute: fare.pricing?.pricePerMinute,
@@ -161,6 +166,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       estimatedFare,
       serviceType,
       pricingAreaType,
+      pricingZoneId,
       status: "pending",
     });
 

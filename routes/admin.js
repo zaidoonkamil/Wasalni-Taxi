@@ -9,8 +9,12 @@ const notifications = require("../services/notifications");
 const { AREA_TYPES, SERVICE_TYPES, normalizeAreaType, normalizeServiceType } = require("../services/areaPricing");
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
-  const category = driverCategory === "super" ? "super" : "ordinary";
-  return (serviceType || "ordinary") === "ordinary" || category === "super";
+  return true;
+};
+
+const parsePositiveNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
 // Get current pricing (latest)
@@ -95,20 +99,26 @@ router.post("/admin/area-zones", requireAdmin, async (req, res) => {
     const lat = Number(req.body.centerLat);
     const lng = Number(req.body.centerLng);
     const radius = parseInt(req.body.radiusMeters, 10);
-    const type = req.body.type === "poor" ? "poor" : "rich";
+    const ordinaryPricePerKm = parsePositiveNumber(req.body.ordinaryPricePerKm);
+    const superPricePerKm = parsePositiveNumber(req.body.superPricePerKm);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       return res.status(400).json({ error: "centerLat and centerLng are required" });
     }
     if (!Number.isFinite(radius) || radius < 100) {
       return res.status(400).json({ error: "radiusMeters must be 100 or more" });
     }
+    if (ordinaryPricePerKm == null || superPricePerKm == null) {
+      return res.status(400).json({ error: "ordinaryPricePerKm and superPricePerKm are required" });
+    }
 
     const zone = await AreaPricingZone.create({
       name: req.body.name || null,
-      type,
+      type: "rich",
       centerLat: lat,
       centerLng: lng,
       radiusMeters: radius,
+      ordinaryPricePerKm,
+      superPricePerKm,
       active: req.body.active == null ? true : !!req.body.active,
     });
     res.json({ success: true, zone });
@@ -124,10 +134,19 @@ router.put("/admin/area-zones/:id", requireAdmin, async (req, res) => {
     if (!zone) return res.status(404).json({ error: "not_found" });
 
     if (req.body.name !== undefined) zone.name = req.body.name || null;
-    if (req.body.type !== undefined) zone.type = req.body.type === "poor" ? "poor" : "rich";
     if (req.body.centerLat !== undefined) zone.centerLat = Number(req.body.centerLat);
     if (req.body.centerLng !== undefined) zone.centerLng = Number(req.body.centerLng);
     if (req.body.radiusMeters !== undefined) zone.radiusMeters = parseInt(req.body.radiusMeters, 10);
+    if (req.body.ordinaryPricePerKm !== undefined) {
+      const value = parsePositiveNumber(req.body.ordinaryPricePerKm);
+      if (value == null) return res.status(400).json({ error: "ordinaryPricePerKm must be greater than zero" });
+      zone.ordinaryPricePerKm = value;
+    }
+    if (req.body.superPricePerKm !== undefined) {
+      const value = parsePositiveNumber(req.body.superPricePerKm);
+      if (value == null) return res.status(400).json({ error: "superPricePerKm must be greater than zero" });
+      zone.superPricePerKm = value;
+    }
     if (req.body.active !== undefined) zone.active = !!req.body.active;
 
     if (!Number.isFinite(Number(zone.centerLat)) || !Number.isFinite(Number(zone.centerLng))) {
