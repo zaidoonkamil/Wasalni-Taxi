@@ -1012,6 +1012,112 @@ router.patch("/profile", requireAuth, async (req, res) => {
   }
 });
 
+router.patch("/admin/users/:id", requireAdmin, upload.none(), async (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const target = await User.findByPk(targetId);
+    if (!target) return res.status(404).json({ error: "المستخدم غير موجود" });
+
+    if (req.body.name !== undefined) {
+      const name = String(req.body.name || "").trim();
+      if (!name) return res.status(400).json({ error: "الاسم مطلوب" });
+      target.name = name;
+    }
+
+    if (req.body.phone !== undefined) {
+      const phone = normalizePhone(req.body.phone);
+      if (!phone) return res.status(400).json({ error: "رقم الهاتف مطلوب" });
+      const existingPhone = await User.findOne({
+        where: {
+          phone,
+          id: { [Op.ne]: target.id },
+        },
+      });
+      if (existingPhone) {
+        return res.status(400).json({ error: "رقم الهاتف مستخدم من حساب آخر" });
+      }
+      target.phone = phone;
+    }
+
+    if (req.body.password !== undefined && String(req.body.password).trim()) {
+      const password = String(req.body.password).trim();
+      if (password.length < 6) {
+        return res.status(400).json({ error: "كلمة المرور قصيرة (6 أحرف على الأقل)" });
+      }
+      target.password = await bcrypt.hash(password, saltRounds);
+    }
+
+    if (req.body.status !== undefined) {
+      const status = String(req.body.status || "").trim();
+      if (!["active", "blocked", "pending"].includes(status)) {
+        return res.status(400).json({ error: "status غير صحيح (active | blocked | pending)" });
+      }
+      if (target.role === "admin" && req.user.id !== target.id && status !== target.status) {
+        return res.status(403).json({ error: "لا يمكن تغيير حالة أدمن آخر" });
+      }
+      target.status = status;
+    }
+
+    if (target.role === "driver") {
+      const textFields = ["vehicleType", "vehicleColor", "vehicleNumber", "location", "blockReason"];
+      for (const field of textFields) {
+        if (req.body[field] !== undefined) {
+          const value = String(req.body[field] || "").trim();
+          target[field] = field === "blockReason" ? value || null : value;
+        }
+      }
+
+      if (req.body.vehicleCategory !== undefined) {
+        const vehicleCategory = String(req.body.vehicleCategory || "").trim();
+        if (!["ordinary", "super"].includes(vehicleCategory)) {
+          return res.status(400).json({ error: "vehicleCategory غير صحيح (ordinary | super)" });
+        }
+        target.vehicleCategory = vehicleCategory;
+      }
+
+      const decimalFields = ["driverDebt", "driverRewardBalance", "driverDebtLimitOverride"];
+      for (const field of decimalFields) {
+        if (req.body[field] !== undefined) {
+          if (req.body[field] === null || String(req.body[field]).trim() === "") {
+            target[field] = field === "driverDebtLimitOverride" ? null : 0;
+            continue;
+          }
+          const value = Number(req.body[field]);
+          if (!Number.isFinite(value) || value < 0) {
+            return res.status(400).json({ error: `${field} غير صحيح` });
+          }
+          target[field] = value;
+        }
+      }
+
+      if (req.body.isDebtBlocked !== undefined) {
+        target.isDebtBlocked =
+          req.body.isDebtBlocked === true ||
+          req.body.isDebtBlocked === "true" ||
+          req.body.isDebtBlocked === "1";
+      }
+    }
+
+    await target.save();
+
+    if (target.role === "driver") {
+      const [driverWithSummary] = await attachDriverRatingSummaries([target]);
+      return res.status(200).json({
+        message: "تم تحديث بيانات الكابتن بنجاح",
+        user: driverWithSummary,
+      });
+    }
+
+    return res.status(200).json({
+      message: "تم تحديث بيانات المستخدم بنجاح",
+      user: safeUser(target),
+    });
+  } catch (err) {
+    console.error("❌ Error admin updating user:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 router.delete("/users/:id", async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id, {
