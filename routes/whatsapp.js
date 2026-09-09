@@ -10,6 +10,7 @@ const {
   normalizeWhatsAppPhone,
   sendWhatsAppText,
 } = require("../services/waSender");
+const { getOtpiqProjectInfo } = require("../services/otpiqService");
 
 const router = express.Router();
 const upload = multer();
@@ -42,6 +43,16 @@ router.post("/whatsapp/init", requireAdmin, async (req, res) => {
 
 router.get("/whatsapp/status", requireAdmin, async (req, res) => {
   return res.status(200).json({ success: true, ...getStatus() });
+});
+
+router.get("/otpiq/status", requireAdmin, async (req, res) => {
+  try {
+    const info = await getOtpiqProjectInfo();
+    return res.status(200).json(info);
+  } catch (error) {
+    console.error("OTPIQ status error:", error.message);
+    return res.status(error.status || 500).json({ error: error.message });
+  }
 });
 
 router.get("/whatsapp/qr", requireAdmin, async (req, res) => {

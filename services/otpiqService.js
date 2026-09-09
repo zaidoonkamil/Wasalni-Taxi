@@ -45,11 +45,39 @@ function optionalPayloadFields() {
 }
 
 function getOtpiqApiKey() {
-  const apiKey = process.env.OTPIQ_API_KEY;
+  const apiKey = String(process.env.OTPIQ_API_KEY || "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "");
   if (!apiKey) {
     throw new Error("OTPIQ_API_KEY is missing in environment variables");
   }
   return apiKey;
+}
+
+async function getOtpiqProjectInfo() {
+  try {
+    const response = await axios.get(`${OTPIQ_BASE_URL}/info`, {
+      timeout: OTPIQ_TIMEOUT_MS,
+      headers: {
+        Authorization: `Bearer ${getOtpiqApiKey()}`,
+      },
+    });
+
+    return {
+      success: true,
+      projectName: response.data?.projectName || null,
+      credit: response.data?.credit ?? null,
+      raw: response.data,
+    };
+  } catch (error) {
+    const responseError =
+      error.response?.data?.error ||
+      error.response?.data?.message ||
+      error.message;
+    const wrapped = new Error(`OTPIQ status failed: ${responseError}`);
+    wrapped.status = error.response?.status || 500;
+    throw wrapped;
+  }
 }
 
 async function sendOtpiqVerificationCode(phone, code) {
@@ -94,6 +122,7 @@ async function sendOtpiqVerificationCode(phone, code) {
 }
 
 module.exports = {
+  getOtpiqProjectInfo,
   normalizeOtpiqPhone,
   sendOtpiqVerificationCode,
 };
