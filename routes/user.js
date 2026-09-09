@@ -14,15 +14,12 @@ const {
   normalizePhone: normalizePhoneService,
   verifyOtp: verifyOtpService,
 } = require("../services/otpService");
-const { sendWhatsAppText } = require("../services/waSender");
+const { sendOtpiqVerificationCode } = require("../services/otpiqService");
 
 async function sendOtpForPurpose(phone, purpose) {
   const otp = await createOtp(phone, purpose);
-  const message = purpose === OTP_PURPOSES.passwordReset
-    ? `رمز إعادة تعيين كلمة المرور هو: ${otp.code}\nصالح لمدة ${Math.floor(otp.expiresInSeconds / 60)} دقائق.\nلا تشارك هذا الرمز مع أي شخص.`
-    : `رمز التحقق الخاص بك هو: ${otp.code}\nصالح لمدة ${Math.floor(otp.expiresInSeconds / 60)} دقائق.\nلا تشارك هذا الرمز مع أي شخص.`;
 
-  await sendWhatsAppText(otp.phone, message);
+  await sendOtpiqVerificationCode(otp.phone, otp.code);
   return otp;
 }
 
@@ -215,8 +212,7 @@ router.post("/forgot-password", upload.none(), async (req, res) => {
       consumedAt: null,
     });
 
-    const msg = `رمز إعادة تعيين كلمة المرور هو: ${otp}\nصالح لمدة ${OTP_EXPIRES_MIN} دقائق.`;
-    await sendWhatsAppText(phone, msg);
+    await sendOtpiqVerificationCode(phone, otp);
 
     return res.status(200).json({
       message: "تم إرسال رمز إعادة تعيين كلمة المرور عبر واتساب",
@@ -405,8 +401,7 @@ router.post("/resend-otp", async (req, res) => {
       consumedAt: null,
     });
 
-    const msg = `رمز التحقق الخاص بك هو: ${otp}\nصالح لمدة ${OTP_EXPIRES_MIN} دقائق.`;
-    await sendWhatsAppText(phone, msg);
+    await sendOtpiqVerificationCode(phone, otp);
 
     return res.status(200).json({ message: "تم إعادة إرسال رمز التحقق عبر واتساب" });
   } catch (err) {

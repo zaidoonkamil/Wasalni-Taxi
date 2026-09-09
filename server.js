@@ -64,7 +64,9 @@ const io = new Server(server, {
     
     await sequelize.sync({ force: false });
     await ensureSchema();
-    startWhatsAppAutoInit();
+    if (process.env.WHATSAPP_INTERNAL_AUTO_INIT === "true") {
+      startWhatsAppAutoInit();
+    }
     console.log("✅ Database & tables synced!");
 
     server.listen(process.env.PORT || 1002, () => {
