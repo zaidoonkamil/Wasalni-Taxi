@@ -12,6 +12,11 @@ const toBool = (value, fallback = true) => {
   return v === "true" || v === "1" || v === "yes";
 };
 
+const normalizeTargetAudience = (value, fallback = "user") => {
+  const target = String(value || "").trim().toLowerCase();
+  return target === "driver" ? "driver" : fallback;
+};
+
 const adPayload = (ad, req) => {
   const json = ad.toJSON ? ad.toJSON() : ad;
   const proto = req.get("x-forwarded-proto") || req.protocol;
@@ -24,8 +29,9 @@ const adPayload = (ad, req) => {
 
 router.get("/ads", async (req, res) => {
   try {
+    const targetAudience = normalizeTargetAudience(req.query.target, "user");
     const ads = await Advertisement.findAll({
-      where: { isActive: true },
+      where: { isActive: true, targetAudience },
       order: [
         ["sortOrder", "ASC"],
         ["createdAt", "DESC"],
@@ -61,6 +67,7 @@ router.post("/admin/ads", requireAdmin, uploadImage.single("image"), async (req,
     const description = String(req.body.description || "").trim();
     const sortOrder = parseInt(req.body.sortOrder || "0", 10);
     const isActive = toBool(req.body.isActive, true);
+    const targetAudience = normalizeTargetAudience(req.body.targetAudience, "user");
     const image = req.file?.filename;
 
     if (!image) return res.status(400).json({ error: "image required" });
@@ -69,6 +76,7 @@ router.post("/admin/ads", requireAdmin, uploadImage.single("image"), async (req,
       title,
       description,
       image,
+      targetAudience,
       isActive,
       sortOrder: Number.isInteger(sortOrder) ? sortOrder : 0,
       updatedByAdminId: req.user?.id || null,
@@ -91,6 +99,9 @@ router.put("/admin/ads/:id", requireAdmin, uploadImage.single("image"), async (r
       ad.title = title;
     }
     if (req.body.description != null) ad.description = String(req.body.description || "").trim();
+    if (req.body.targetAudience != null) {
+      ad.targetAudience = normalizeTargetAudience(req.body.targetAudience, ad.targetAudience || "user");
+    }
     if (req.body.sortOrder != null) {
       const sortOrder = parseInt(req.body.sortOrder || "0", 10);
       ad.sortOrder = Number.isInteger(sortOrder) ? sortOrder : 0;

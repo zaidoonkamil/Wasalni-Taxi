@@ -61,6 +61,12 @@ const ensureSchema = async () => {
     type: DataTypes.DECIMAL(10, 3),
     allowNull: true,
   });
+
+  await addColumnIfMissing("advertisements", "targetAudience", {
+    type: DataTypes.ENUM("user", "driver"),
+    allowNull: false,
+    defaultValue: "user",
+  });
 };
 
 module.exports = ensureSchema;

@@ -970,7 +970,7 @@ router.get("/profile", async (req, res) => {
   });
 });
 
-router.patch("/profile", requireAuth, async (req, res) => {
+router.patch("/profile", requireAuth, uploadImage.single("driverImage"), async (req, res) => {
   try {
     const name = String(req.body.name || "").trim();
     const phone = normalizePhone(req.body.phone);
@@ -992,6 +992,9 @@ router.patch("/profile", requireAuth, async (req, res) => {
 
     req.user.name = name;
     req.user.phone = phone;
+    if (req.file?.filename) {
+      req.user.driverImage = { main: req.file.filename };
+    }
     await req.user.save();
 
     const token = generateToken(req.user);
