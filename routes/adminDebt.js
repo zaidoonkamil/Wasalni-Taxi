@@ -57,6 +57,9 @@ const parseMoneyAmount = (value) => {
   return Number.isFinite(amount) ? amount : 0;
 };
 
+const formatIqd = (value) =>
+  `${Math.round(parseMoneyAmount(value)).toLocaleString("en-US")} IQD`;
+
 const notifyDriverDebtUpdated = async (driver, amount) => {
   try {
     const sid = await redisService.client().get(`socket:driver:${driver.id}`);
@@ -70,7 +73,7 @@ const notifyDriverDebtUpdated = async (driver, amount) => {
 
 const notifyDriverRewardGranted = async (driver, amount) => {
   const title = "مكافأة جديدة";
-  const message = `تمت إضافة مكافأة إلى حسابك بقيمة ${amount} د.ع. سيتم خصم عمولات رحلاتك منها قبل احتساب أي دين.`;
+  const message = `تمت إضافة مكافأة إلى حسابك بقيمة ${formatIqd(amount)}. سيتم خصم عمولات رحلاتك منها قبل احتساب أي دين.`;
   try {
     await socketService.notifyDriverSocket(driver.id, "driver:reward_updated", {
       rewardBalance: driver.driverRewardBalance,
