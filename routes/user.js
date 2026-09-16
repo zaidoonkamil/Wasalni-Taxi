@@ -1050,8 +1050,8 @@ router.patch("/admin/users/:id", requireAdmin, upload.none(), async (req, res) =
       if (!["active", "blocked", "pending"].includes(status)) {
         return res.status(400).json({ error: "status غير صحيح (active | blocked | pending)" });
       }
-      if (target.role === "admin" && req.user.id !== target.id && status !== target.status) {
-        return res.status(403).json({ error: "لا يمكن تغيير حالة أدمن آخر" });
+      if (target.role === "admin" && req.user.id === target.id && status !== target.status) {
+        return res.status(403).json({ error: "لا يمكنك تغيير حالة حسابك أنت" });
       }
       target.status = status;
     }
@@ -1225,9 +1225,6 @@ router.patch("/users/:id/status", requireAdmin, upload.none(), async (req, res) 
     }
     const target = await User.findByPk(userId);
     if (!target) return res.status(404).json({ error: "المستخدم غير موجود" });
-    if (target.role === "admin") {
-      return res.status(403).json({ error: "لا يمكن تغيير حالة الأدمن" });
-    }
     if (req.user && req.user.id === target.id) {
       return res.status(403).json({ error: "لا يمكنك تغيير حالتك أنت" });
     }
