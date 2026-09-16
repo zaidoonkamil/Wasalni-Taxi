@@ -982,7 +982,6 @@ router.post("/profile/phone-change/send-otp", requireAuth, upload.none(), async 
       return res.status(400).json({ error: "هذا هو رقمك الحالي" });
     }
 
-    const phoneChanged = phone !== req.user.phone;
     const existingPhone = await User.findOne({
       where: {
         phone,
@@ -1027,7 +1026,7 @@ router.patch("/profile", requireAuth, uploadImage.single("driverImage"), async (
       return res.status(400).json({ error: "رقم الهاتف مستخدم من حساب آخر" });
     }
 
-    if (phoneChanged) {
+    if (phone !== req.user.phone) {
       const otpCode = String(req.body.otpCode || "").trim();
       if (!otpCode) {
         return res.status(400).json({ error: "رمز التحقق مطلوب لتغيير رقم الهاتف" });
