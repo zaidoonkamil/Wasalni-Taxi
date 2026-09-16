@@ -970,6 +970,43 @@ router.get("/profile", async (req, res) => {
   });
 });
 
+router.post("/profile/phone-change/send-otp", requireAuth, upload.none(), async (req, res) => {
+  try {
+    const phone = normalizePhone(req.body.phone);
+
+    if (!phone) {
+      return res.status(400).json({ error: "رقم الهاتف مطلوب" });
+    }
+
+    if (phone === req.user.phone) {
+      return res.status(400).json({ error: "هذا هو رقمك الحالي" });
+    }
+
+    const phoneChanged = phone !== req.user.phone;
+    const existingPhone = await User.findOne({
+      where: {
+        phone,
+        id: { [Op.ne]: req.user.id },
+      },
+    });
+
+    if (existingPhone) {
+      return res.status(400).json({ error: "رقم الهاتف مستخدم من حساب آخر" });
+    }
+
+    const otp = await sendOtpForPurpose(phone, OTP_PURPOSES.verifyAccount);
+    return res.status(200).json({
+      success: true,
+      phone: otp.phone,
+      expiresInSeconds: otp.expiresInSeconds,
+      retryAfterSeconds: otp.retryAfterSeconds,
+      message: "تم إرسال رمز التحقق إلى الرقم الجديد عبر واتساب",
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Internal Server Error" });
+  }
+});
+
 router.patch("/profile", requireAuth, uploadImage.single("driverImage"), async (req, res) => {
   try {
     const name = String(req.body.name || "").trim();
@@ -988,6 +1025,14 @@ router.patch("/profile", requireAuth, uploadImage.single("driverImage"), async (
 
     if (existingPhone) {
       return res.status(400).json({ error: "رقم الهاتف مستخدم من حساب آخر" });
+    }
+
+    if (phoneChanged) {
+      const otpCode = String(req.body.otpCode || "").trim();
+      if (!otpCode) {
+        return res.status(400).json({ error: "رمز التحقق مطلوب لتغيير رقم الهاتف" });
+      }
+      await verifyOtpService(phone, otpCode, OTP_PURPOSES.verifyAccount);
     }
 
     req.user.name = name;
