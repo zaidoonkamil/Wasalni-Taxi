@@ -26,8 +26,8 @@ const driverCanReceiveService = (driverCategory, serviceType) => {
 };
 
 const previousGoodDriverMessage = {
-  title: "Ø²Ø¨ÙˆÙ† ÙŠØ¹Ø±ÙÙƒ ÙŠØ·Ù„Ø¨ Ø±Ø­Ù„Ø©",
-  message: "Ø£Ø­Ø¯ Ø§Ù„Ø²Ø¨Ø§Ø¦Ù† Ø§Ù„Ø°ÙŠÙ† Ø£ÙˆØµÙ„ØªÙ‡Ù… Ø³Ø§Ø¨Ù‚Ø§Ù‹ ÙˆÙ‚ÙŠÙ‘Ù… Ø±Ø­Ù„ØªÙƒ Ø¨Ø´ÙƒÙ„ Ø¬ÙŠØ¯ ÙŠØ·Ù„Ø¨ ØªÙƒØ³ÙŠ Ø§Ù„Ø¢Ù† Ø¨Ø§Ù„Ù‚Ø±Ø¨ Ù…Ù†Ùƒ.",
+  title: "زبون سابق يطلب رحلة",
+  message: "أحد الزبائن الذين أوصلتهم سابقاً وقيّم رحلتك بشكل جيد يطلب تكسي الآن بالقرب منك.",
 };
 
 const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
