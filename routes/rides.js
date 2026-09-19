@@ -317,7 +317,21 @@ router.get("/drivers/nearby", authenticateToken, async (req, res) => {
     const list = [];
     for (const did of driverIds) {
       const loc = await redisService.getJSON(`driver:loc:${did}`);
-      list.push({ driverId: did, loc });
+      const driver = await User.findByPk(did, {
+        attributes: ["id", "name", "vehicleColor", "vehicleCategory"],
+      }).catch(() => null);
+      list.push({
+        driverId: did,
+        loc,
+        driver: driver
+          ? {
+              id: driver.id,
+              name: driver.name,
+              vehicleColor: driver.vehicleColor,
+              vehicleCategory: driver.vehicleCategory,
+            }
+          : null,
+      });
     }
     res.json({ drivers: list });
   } catch (e) { res.status(500).json({ error: e.message }); }
