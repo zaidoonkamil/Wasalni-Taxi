@@ -12,6 +12,7 @@ const PasswordResetOtp = require("./PasswordResetOtp");
 const Advertisement = require("./advertisement");
 const DriverRating = require("./driver_rating");
 const AreaPricingZone = require("./area_pricing_zone");
+const AreaZoneRoutePrice = require("./area_zone_route_price");
 
 User.hasMany(UserDevice, { foreignKey: "user_id", as: "devices", onDelete: "CASCADE" });
 UserDevice.belongsTo(User, { foreignKey: "user_id", as: "user" });
@@ -30,6 +31,11 @@ DriverRating.belongsTo(RideRequest, { foreignKey: "ride_request_id", as: "ride" 
 
 RideRequest.hasMany(RideEvent, { foreignKey: "ride_request_id", as: "events", onDelete: "CASCADE" });
 RideEvent.belongsTo(RideRequest, { foreignKey: "ride_request_id", as: "ride" });
+
+AreaPricingZone.hasMany(AreaZoneRoutePrice, { foreignKey: "fromZoneId", as: "routePricesFrom", onDelete: "CASCADE" });
+AreaPricingZone.hasMany(AreaZoneRoutePrice, { foreignKey: "toZoneId", as: "routePricesTo", onDelete: "CASCADE" });
+AreaZoneRoutePrice.belongsTo(AreaPricingZone, { foreignKey: "fromZoneId", as: "fromZone" });
+AreaZoneRoutePrice.belongsTo(AreaPricingZone, { foreignKey: "toZoneId", as: "toZone" });
 
 // Debt ledger associations
 User.hasMany(DriverDebtLedger, { foreignKey: "driver_id", as: "debtLedger", onDelete: "CASCADE" });
@@ -60,4 +66,5 @@ module.exports = {
   Advertisement,
   DriverRating,
   AreaPricingZone,
+  AreaZoneRoutePrice,
 };

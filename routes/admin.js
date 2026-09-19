@@ -1,12 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const { requireAdmin } = require("./user");
-const { PricingSetting, RideRequest, User, AreaPricingZone } = require("../models");
+const { PricingSetting, RideRequest, User, AreaPricingZone, AreaZoneRoutePrice } = require("../models");
 const { Op } = require("sequelize");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
-const { AREA_TYPES, SERVICE_TYPES, normalizeAreaType, normalizeServiceType } = require("../services/areaPricing");
+const { AREA_TYPES, SERVICE_TYPES, normalizeAreaType, normalizeServiceType, normalizeRouteZoneIds } = require("../services/areaPricing");
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
   return true;
@@ -169,6 +169,124 @@ router.delete("/admin/area-zones/:id", requireAdmin, async (req, res) => {
     const zone = await AreaPricingZone.findByPk(req.params.id);
     if (!zone) return res.status(404).json({ error: "not_found" });
     await zone.destroy();
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get("/admin/area-zone-route-prices", requireAdmin, async (req, res) => {
+  try {
+    const routePrices = await AreaZoneRoutePrice.findAll({
+      include: [
+        { model: AreaPricingZone, as: "fromZone", attributes: ["id", "name"] },
+        { model: AreaPricingZone, as: "toZone", attributes: ["id", "name"] },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+    res.json({ routePrices });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post("/admin/area-zone-route-prices", requireAdmin, async (req, res) => {
+  try {
+    const ids = normalizeRouteZoneIds(req.body.fromZoneId, req.body.toZoneId);
+    if (!ids) return res.status(400).json({ error: "fromZoneId and toZoneId must be different valid zones" });
+
+    const ordinaryPricePerKm = parsePositiveNumber(req.body.ordinaryPricePerKm);
+    const superPricePerKm = parsePositiveNumber(req.body.superPricePerKm);
+    if (ordinaryPricePerKm == null || superPricePerKm == null) {
+      return res.status(400).json({ error: "ordinaryPricePerKm and superPricePerKm are required" });
+    }
+
+    const zonesCount = await AreaPricingZone.count({ where: { id: { [Op.in]: [ids.fromZoneId, ids.toZoneId] } } });
+    if (zonesCount !== 2) return res.status(404).json({ error: "zone_not_found" });
+
+    const [routePrice, created] = await AreaZoneRoutePrice.findOrCreate({
+      where: ids,
+      defaults: {
+        ...ids,
+        ordinaryPricePerKm,
+        superPricePerKm,
+        active: req.body.active == null ? true : !!req.body.active,
+      },
+    });
+
+    if (!created) {
+      routePrice.ordinaryPricePerKm = ordinaryPricePerKm;
+      routePrice.superPricePerKm = superPricePerKm;
+      if (req.body.active !== undefined) routePrice.active = !!req.body.active;
+      await routePrice.save();
+    }
+
+    const saved = await AreaZoneRoutePrice.findByPk(routePrice.id, {
+      include: [
+        { model: AreaPricingZone, as: "fromZone", attributes: ["id", "name"] },
+        { model: AreaPricingZone, as: "toZone", attributes: ["id", "name"] },
+      ],
+    });
+    res.json({ success: true, routePrice: saved });
+  } catch (e) {
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put("/admin/area-zone-route-prices/:id", requireAdmin, async (req, res) => {
+  try {
+    const routePrice = await AreaZoneRoutePrice.findByPk(req.params.id);
+    if (!routePrice) return res.status(404).json({ error: "not_found" });
+
+    if (req.body.fromZoneId !== undefined || req.body.toZoneId !== undefined) {
+      const ids = normalizeRouteZoneIds(
+        req.body.fromZoneId ?? routePrice.fromZoneId,
+        req.body.toZoneId ?? routePrice.toZoneId
+      );
+      if (!ids) return res.status(400).json({ error: "fromZoneId and toZoneId must be different valid zones" });
+      const zonesCount = await AreaPricingZone.count({ where: { id: { [Op.in]: [ids.fromZoneId, ids.toZoneId] } } });
+      if (zonesCount !== 2) return res.status(404).json({ error: "zone_not_found" });
+      routePrice.fromZoneId = ids.fromZoneId;
+      routePrice.toZoneId = ids.toZoneId;
+    }
+
+    if (req.body.ordinaryPricePerKm !== undefined) {
+      const value = parsePositiveNumber(req.body.ordinaryPricePerKm);
+      if (value == null) return res.status(400).json({ error: "ordinaryPricePerKm must be greater than zero" });
+      routePrice.ordinaryPricePerKm = value;
+    }
+    if (req.body.superPricePerKm !== undefined) {
+      const value = parsePositiveNumber(req.body.superPricePerKm);
+      if (value == null) return res.status(400).json({ error: "superPricePerKm must be greater than zero" });
+      routePrice.superPricePerKm = value;
+    }
+    if (req.body.active !== undefined) routePrice.active = !!req.body.active;
+
+    await routePrice.save();
+    const saved = await AreaZoneRoutePrice.findByPk(routePrice.id, {
+      include: [
+        { model: AreaPricingZone, as: "fromZone", attributes: ["id", "name"] },
+        { model: AreaPricingZone, as: "toZone", attributes: ["id", "name"] },
+      ],
+    });
+    res.json({ success: true, routePrice: saved });
+  } catch (e) {
+    if (e.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).json({ error: "route_price_already_exists" });
+    }
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.delete("/admin/area-zone-route-prices/:id", requireAdmin, async (req, res) => {
+  try {
+    const routePrice = await AreaZoneRoutePrice.findByPk(req.params.id);
+    if (!routePrice) return res.status(404).json({ error: "not_found" });
+    await routePrice.destroy();
     res.json({ success: true });
   } catch (e) {
     console.error(e.message);

@@ -40,6 +40,12 @@ const ensureSchema = async () => {
     defaultValue: null,
   });
 
+  await addColumnIfMissing("ride_requests", "pricingRouteId", {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  });
+
   await addColumnIfMissing("pricing_settings", "serviceType", {
     type: DataTypes.ENUM("ordinary", "super"),
     allowNull: false,

@@ -44,6 +44,11 @@ const RideRequest = sequelize.define(
       allowNull: true,
       defaultValue: null,
     },
+    pricingRouteId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+    },
     priceEstimate: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
     estimatedFare: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
     distanceKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
