@@ -92,7 +92,7 @@ const init = async (io) => {
           await refreshSocketKey();
         });
         
-        // Ø±ÙØ¶ Ø§Ù„Ø·Ù„Ø¨ Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø³Ø§Ø¦Ù‚
+        // رفض الطلب من قبل السائق
       socket.on("driver:reject_request", async ({ requestId }) => {
         try {
           if (!requestId) return;
@@ -122,7 +122,7 @@ const init = async (io) => {
           }
       });
 
-      // Ø§ØªØµØ§Ù„ Ø§Ù„Ø³Ø§Ø¦Ù‚
+      // اتصال السائق
       socket.on("driver:online", async () => {
         try {
           const isDebtBlocked = await redisClient.sIsMember("drivers:debt_blocked", String(user.id));
@@ -133,7 +133,7 @@ const init = async (io) => {
           await redisClient.set(`driver:state:${user.id}`, "online", { EX: 3600 });
           await redisClient.sAdd("drivers:online", String(user.id));
           await redisClient.set(socketKey, socket.id, { EX: 3600 });
-          console.log("ðŸŸ¢ driver online:", user.id);
+          console.log("driver online:", user.id);
         } catch (e) {
           console.error("driver:online error", e.message);
         }
@@ -146,7 +146,7 @@ const init = async (io) => {
         try { await redisClient.del(`driver:loc:${user.id}`); } catch (e) {}
       });
 
-      // ØªØ­Ø¯ÙŠØ« Ù…ÙˆÙ‚Ø¹ Ø§Ù„Ø³Ø§Ø¦Ù‚
+      // تحديث موقع السائق
       socket.on("driver:location", async (data, ack) => {
         try {
           const now = Date.now();
@@ -205,7 +205,7 @@ const init = async (io) => {
       });
 
 
-      // Ù‚Ø¨ÙˆÙ„ Ø·Ù„Ø¨ Ø§Ù„Ø±Ø­Ù„Ø© Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø³Ø§Ø¦Ù‚
+      // قبول طلب الرحلة من قبل السائق
       socket.on("driver:accept_request", async ({ requestId }) => {
         try {
           const driver = await User.findByPk(user.id);
@@ -262,7 +262,7 @@ const init = async (io) => {
               ioInstance.to(riderSocketId).emit("request:accepted", payload);
             } else {
               // offline -> send push
-              try { await notifications.sendNotificationToUser(req.rider_id, 'ØªÙ… Ù‚Ø¨ÙˆÙ„ Ø·Ù„Ø¨Ùƒ', 'Ø³Ø§Ø¦Ù‚ ÙÙŠ Ø§Ù„Ø·Ø±ÙŠÙ‚'); } catch (e) {}
+              try { await notifications.sendNotificationToUser(req.rider_id, "تم قبول طلبك", "السائق في الطريق"); } catch (e) {}
             }
 
             const sentKey = `request:sent_to:${req.id}`;
@@ -296,7 +296,7 @@ const init = async (io) => {
         }
       });
 
-      // ÙˆØµÙˆÙ„ Ø§Ù„Ø³Ø§Ø¦Ù‚
+      // وصول السائق
       socket.on("driver:arrived", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -311,8 +311,8 @@ const init = async (io) => {
           try {
             await notifications.sendNotificationToUser(
               req.rider_id,
-              "Ø§Ù„Ø³Ø§Ø¦Ù‚ ÙˆØµÙ„ Ù…ÙˆÙ‚Ø¹Ùƒ",
-              "Ø§Ù„ÙƒØ§Ø¨ØªÙ† ÙˆØµÙ„ Ù„Ù…ÙˆÙ‚Ø¹ÙƒØŒ ØªÙ‚Ø¯Ø± ØªØ·Ù„Ø¹ Ù‡Ø³Ù‡"
+              "السائق وصل موقعك",
+              "الكابتن وصل لموقعك، تقدر تطلع هسه"
             );
           } catch (e) {
             console.error("arrived push error:", e.message);
@@ -324,7 +324,7 @@ const init = async (io) => {
       });
 
 
-      // Ø¨Ø¯Ø¡ Ø§Ù„Ø±Ø­Ù„Ø©
+      // بدء الرحلة
       socket.on("driver:start_trip", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -337,7 +337,7 @@ const init = async (io) => {
         } catch (e) { console.error(e.message); }
       });
 
-      // Ø¥Ù†Ù‡Ø§Ø¡ Ø§Ù„Ø±Ø­Ù„Ø©
+      // إنهاء الرحلة
       socket.on("driver:end_trip", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -421,7 +421,7 @@ const init = async (io) => {
         } catch (e) { console.error(e.message); }
       });
 
-      //  Ø¥Ù†Ø´Ø§Ø¡ Ø·Ù„Ø¨ Ø§Ù„Ø±Ø­Ù„Ø© Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø±Ø§ÙƒØ¨
+      // إنشاء طلب الرحلة من قبل الراكب
       socket.on("rider:create_request", async (data, ack) => {
         const t = await sequelize.transaction();
         try {
@@ -445,11 +445,11 @@ const init = async (io) => {
 
           if (active) {
             await t.rollback();
-            console.log("âš ï¸ active ride exists id=", active.id, "status=", active.status);
+            console.log("active ride exists id=", active.id, "status=", active.status);
             return ack && ack({
               ok: false,
               error: "active_ride_exists",
-              message: "Ø¹Ù†Ø¯Ùƒ Ø±Ø­Ù„Ø©/Ø·Ù„Ø¨ ÙØ¹Ø§Ù„ Ù…Ø³Ø¨Ù‚Ø§Ù‹",
+              message: "عندك رحلة/طلب فعال مسبقاً",
               activeRequestId: active.id,
               status: active.status,
             });
@@ -523,7 +523,7 @@ const init = async (io) => {
               "ASC",
             ])
             .catch((e) => {
-              console.error("âŒ GEORADIUS error", e.message);
+              console.error("GEORADIUS error", e.message);
               return [];
             });
 
@@ -588,7 +588,7 @@ const init = async (io) => {
 
           await redisClient.expire(sentKey, 3600);
 
-          console.log("ðŸ“¤ done matching. sentCount=", sentCount);
+          console.log("done matching. sentCount=", sentCount);
 
           return ack && ack({
             ok: true,
@@ -600,13 +600,13 @@ const init = async (io) => {
           try {
             await t.rollback();
           } catch (_) {}
-          console.error("âŒ rider:create_request", e.message);
+          console.error("rider:create_request", e.message);
           return ack && ack({ ok: false, error: e.message });
         }
       });
 
 
-      // Ø¥Ù„ØºØ§Ø¡ Ø·Ù„Ø¨ Ø§Ù„Ø±Ø­Ù„Ø© Ù…Ù† Ù‚Ø¨Ù„ Ø§Ù„Ø±Ø§ÙƒØ¨
+      // إلغاء طلب الرحلة من قبل الراكب
       socket.on("rider:cancel_request", async ({ requestId }) => {
         try {
           const req = await RideRequest.findByPk(requestId);
@@ -656,7 +656,7 @@ const init = async (io) => {
   });
 };
 
-// Ø§Ø®Ø¨Ø§Ø± Ø§Ù„Ø³Ø§Ø¦Ù‚ Ø¹Ø¨Ø± Ø§Ù„Ø³ÙˆÙƒØª
+// إخبار السائق عبر السوكت
 const notifyDriverSocket = async (driverId, event, payload) => {
   if (!ioInstance) return false;
   const redisClient = redisService.client();
@@ -665,7 +665,7 @@ const notifyDriverSocket = async (driverId, event, payload) => {
   return !!sid;
 };
 
-// Ø§Ø®Ø¨Ø§Ø± Ø§Ù„Ø±Ø§ÙƒØ¨ Ø¹Ø¨Ø± Ø§Ù„Ø³ÙˆÙƒØª
+// إخبار الراكب عبر السوكت
 const notifyRiderSocket = async (riderId, event, payload) => {
   if (!ioInstance) return false;
   const redisClient = redisService.client();
