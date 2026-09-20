@@ -15,7 +15,7 @@ const grantDriverReward = async ({ driver, amount, note, adminId, transaction })
   const nextBalance = previousBalance + parsed;
   driver.driverRewardBalance = nextBalance;
 
-  await DriverRewardLedger.create(
+  const rewardLedger = await DriverRewardLedger.create(
     {
       driver_id: driver.id,
       type: "grant",
@@ -31,6 +31,7 @@ const grantDriverReward = async ({ driver, amount, note, adminId, transaction })
   await driver.reload({ transaction });
   return {
     driver,
+    rewardLedgerId: rewardLedger.id,
     granted: parsed,
     previousBalance,
     nextBalance: parseAmount(driver.driverRewardBalance),

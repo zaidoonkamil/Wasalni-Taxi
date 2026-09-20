@@ -346,11 +346,24 @@ const init = async (io) => {
           // mark completed
           req.status = "completed";
           await req.save();
-          await redisClient.del(`driver:busy:${req.driver_id}`);
-          // notify rider
-          const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
           const payload = { requestId: req.id, status: req.status };
-          if (riderSocketId && ioInstance) ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
+          if (req.driver_id) {
+            await redisClient.del(`driver:busy:${req.driver_id}`);
+          }
+          await redisClient.del(`request:sent_to:${req.id}`);
+          await redisClient.del(`request:rejected:${req.id}`);
+
+          const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
+          if (riderSocketId && ioInstance) {
+            ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
+          }
+
+          const driverSocketId = req.driver_id
+            ? await redisClient.get(`socket:driver:${req.driver_id}`)
+            : null;
+          if (driverSocketId && ioInstance) {
+            ioInstance.to(driverSocketId).emit("trip:status_changed", payload);
+          }
 
           // --- Debt / commission handling (MySQL only) ---
           try {

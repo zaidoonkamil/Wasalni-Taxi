@@ -3,7 +3,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { Op, fn, col } = require("sequelize");
-const { User, UserDevice, DriverRating } = require("../models");
+const { User, UserDevice, DriverRating, DriverRewardLedger } = require("../models");
 const uploadImage = require("../middlewares/uploads");
 const router = express.Router();
 const upload = multer();
@@ -499,6 +499,16 @@ const attachDriverRatingSummaries = async (drivers) => {
   });
 };
 
+const attachLatestDriverRewardGrant = async (driverData) => {
+  if (!driverData || driverData.role !== "driver") return driverData;
+  const latestRewardGrant = await DriverRewardLedger.findOne({
+    where: { driver_id: driverData.id, type: "grant" },
+    order: [["createdAt", "DESC"]],
+    attributes: ["id", "amount", "balanceAfter", "createdAt"],
+  });
+  return { ...driverData, latestRewardGrant };
+};
+
 router.post("/users", upload.none(), async (req, res) => {
   try {
     const { name, password, role = "user", status } = req.body;
@@ -960,7 +970,7 @@ router.get("/profile", async (req, res) => {
 
       if (user.role === "driver") {
         const [driverWithSummary] = await attachDriverRatingSummaries([user]);
-        return res.status(200).json(driverWithSummary);
+        return res.status(200).json(await attachLatestDriverRewardGrant(driverWithSummary));
       }
       return res.status(200).json(user);
     } catch (error) {

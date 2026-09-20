@@ -71,12 +71,14 @@ const notifyDriverDebtUpdated = async (driver, amount) => {
   } catch (e) {}
 };
 
-const notifyDriverRewardGranted = async (driver, amount) => {
+const notifyDriverRewardGranted = async (driver, amount, rewardGrantId = null) => {
   const title = "مكافأة جديدة";
   const message = `تمت إضافة مكافأة إلى حسابك بقيمة ${formatIqd(amount)}. سيتم خصم عمولات رحلاتك منها قبل احتساب أي دين.`;
   try {
     await socketService.notifyDriverSocket(driver.id, "driver:reward_updated", {
       rewardBalance: driver.driverRewardBalance,
+      rewardGrantId,
+      rewardAmount: amount,
       title,
       message,
     });
@@ -111,11 +113,18 @@ router.get("/driver/financial-summary", async (req, res) => {
       return res.status(404).json({ error: "driver_not_found" });
     }
 
+    const latestRewardGrant = await DriverRewardLedger.findOne({
+      where: { driver_id: driver.id, type: "grant" },
+      order: [["createdAt", "DESC"]],
+      attributes: ["id", "amount", "balanceAfter", "createdAt"],
+    });
+
     return res.json({
       driverDebt: driver.driverDebt || "0",
       driverRewardBalance: driver.driverRewardBalance || "0",
       isDebtBlocked: !!driver.isDebtBlocked,
       blockReason: driver.blockReason,
+      latestRewardGrant,
     });
   } catch (e) {
     console.error("driver financial summary error:", e.message);
@@ -243,7 +252,7 @@ router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) =
     const savedDriverDebt = driver.driverDebt;
 
     await t.commit();
-    await notifyDriverRewardGranted(driver, parsed);
+    await notifyDriverRewardGranted(driver, parsed, rewardResult.rewardLedgerId);
 
     console.log(
       `🎁 Driver reward granted driver=${driver.id} amount=${parsed} previous=${rewardResult.previousBalance} balance=${savedRewardBalance} debt=${savedDriverDebt}`
@@ -254,6 +263,7 @@ router.post("/admin/drivers/:id/rewards/grant", requireAdmin, async (req, res) =
       driver,
       reward: {
         granted: rewardResult.granted,
+        id: rewardResult.rewardLedgerId,
         previousBalance: rewardResult.previousBalance,
         balance: savedRewardBalance,
         driverDebt: savedDriverDebt,
@@ -290,6 +300,7 @@ router.post("/admin/drivers/rewards/grant-bulk", requireAdmin, async (req, res) 
 
     const drivers = await User.findAll({ where, transaction: t, lock: t.LOCK.UPDATE });
     const rewards = [];
+    const rewardIdsByDriver = new Map();
     for (const driver of drivers) {
       const rewardResult = await grantDriverReward({
         driver,
@@ -300,15 +311,17 @@ router.post("/admin/drivers/rewards/grant-bulk", requireAdmin, async (req, res) 
       });
       rewards.push({
         driverId: driver.id,
+        id: rewardResult.rewardLedgerId,
         granted: rewardResult.granted,
         previousBalance: rewardResult.previousBalance,
         balance: rewardResult.nextBalance,
       });
+      rewardIdsByDriver.set(String(driver.id), rewardResult.rewardLedgerId);
     }
 
     await t.commit();
     for (const driver of drivers) {
-      await notifyDriverRewardGranted(driver, parsed);
+      await notifyDriverRewardGranted(driver, parsed, rewardIdsByDriver.get(String(driver.id)) || null);
     }
 
     res.json({ success: true, affected: drivers.length, drivers, rewards });

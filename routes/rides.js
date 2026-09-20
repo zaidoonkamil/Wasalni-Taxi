@@ -203,6 +203,8 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     });
     const driverCategoryById = new Map(driverRows.map((driver) => [String(driver.id), driver.vehicleCategory || "ordinary"]));
     const previousGoodRatingsByDriver = await getPreviousGoodDriverRatings(user.id, driverIds);
+    const sentKey = `request:sent_to:${newReq.id}`;
+    let sentCount = 0;
 
     for (const did of driverIds) {
       if (!driverCanReceiveService(driverCategoryById.get(String(did)), serviceType)) continue;
@@ -230,6 +232,8 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       await socketService
         .notifyDriverSocket(did, "request:new", payload)
         .catch(() => {});
+      await redisClient.sAdd(sentKey, String(did));
+      sentCount++;
 
       if (priorityMatch) {
         notifications
@@ -237,8 +241,9 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
           .catch((e) => console.error("previous good driver push error:", e.message));
       }
     }
+    await redisClient.expire(sentKey, 3600);
 
-    return res.json({ success: true, request: newReq });
+    return res.json({ success: true, request: newReq, debug: { sentCount } });
   } catch (e) {
     console.error(e.message);
     return res.status(500).json({ error: e.message });
