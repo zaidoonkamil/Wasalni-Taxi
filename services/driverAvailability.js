@@ -6,6 +6,9 @@ const parseAmount = (value) => {
   return Number.isFinite(amount) ? amount : 0;
 };
 
+const DRIVER_ONLINE_TTL_SECONDS = 90;
+const driverOnlineKey = (driverId) => `driver:online:${driverId}`;
+
 const categoryPrefix = (category) => (category === "super" ? "SUPER_" : "");
 
 const getDriverDebtLimit = async (driver, transaction) => {
@@ -33,6 +36,7 @@ const getDriverDebtLimit = async (driver, transaction) => {
 const cleanDriverRealtimeState = async (driverId, redisClient) => {
   const redis = redisClient || (await redisService.init());
   await redis.del(`driver:state:${driverId}`);
+  await redis.del(driverOnlineKey(driverId));
   await redis.sRem("drivers:online", String(driverId));
   await redis.sendCommand(["ZREM", "drivers:geo", String(driverId)]).catch(() => {});
   await redis.del(`driver:loc:${driverId}`);
@@ -115,10 +119,34 @@ const syncDriverAvailability = async (driver, options = {}) => {
   };
 };
 
+const markDriverOnline = async (driverId, redisClient) => {
+  const redis = redisClient || (await redisService.init());
+  await redis.set(driverOnlineKey(driverId), "1", { EX: DRIVER_ONLINE_TTL_SECONDS });
+  await redis.set(`driver:state:${driverId}`, "online", { EX: DRIVER_ONLINE_TTL_SECONDS });
+  await redis.sAdd("drivers:online", String(driverId));
+};
+
+const isDriverOnlineFresh = async (driverId, redisClient) => {
+  const redis = redisClient || (await redisService.init());
+  const isListed = await redis.sIsMember("drivers:online", String(driverId));
+  if (!isListed) return false;
+
+  const heartbeat = await redis.get(driverOnlineKey(driverId));
+  if (!heartbeat) {
+    await cleanDriverRealtimeState(driverId, redis);
+    return false;
+  }
+
+  return true;
+};
+
 module.exports = {
   parseAmount,
+  DRIVER_ONLINE_TTL_SECONDS,
   getDriverDebtLimit,
   cleanDriverRealtimeState,
+  markDriverOnline,
+  isDriverOnlineFresh,
   syncDriverAvailability,
   reconcileAllDriverAvailability: async () => {
     const redis = await redisService.init();

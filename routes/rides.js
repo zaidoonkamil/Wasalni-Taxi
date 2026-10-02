@@ -7,6 +7,7 @@ const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
 const { Op } = require("sequelize");
 const { calculateFare, normalizeServiceType } = require("../services/areaPricing");
+const { isDriverOnlineFresh } = require("../services/driverAvailability");
 
 function roundUpTo250(amount) {
   return Math.ceil(amount / 250) * 250;
@@ -212,7 +213,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       if (driver.isDebtBlocked || driver.blockReason === "debt") continue;
       if (!driverCanReceiveService(driver.vehicleCategory || "ordinary", serviceType)) continue;
 
-      const isOnline = await redisClient.sIsMember("drivers:online", String(did));
+      const isOnline = await isDriverOnlineFresh(did, redisClient);
       if (!isOnline) continue;
 
       const busyRideId = await redisClient.get(`driver:busy:${did}`);

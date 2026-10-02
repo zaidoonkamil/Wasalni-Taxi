@@ -8,6 +8,8 @@ const { calculateFare, normalizeServiceType } = require("./areaPricing");
 const { applyCommissionWithReward } = require("./driverRewards");
 const {
   cleanDriverRealtimeState,
+  isDriverOnlineFresh,
+  markDriverOnline,
   syncDriverAvailability,
 } = require("./driverAvailability");
 
@@ -162,8 +164,7 @@ const init = async (io) => {
             return;
           }
 
-          await redisClient.set(`driver:state:${user.id}`, "online", { EX: 3600 });
-          await redisClient.sAdd("drivers:online", String(user.id));
+          await markDriverOnline(user.id, redisClient);
           await redisClient.set(socketKey, socket.id, { EX: 3600 });
           console.log("driver online:", user.id);
         } catch (e) {
@@ -194,12 +195,11 @@ const init = async (io) => {
             return ack && ack({ ok: false, reason: "missing_lat_lng" });
           }
 
-          const online = await redisClient.sIsMember("drivers:online", String(user.id));
+          const online = await isDriverOnlineFresh(user.id, redisClient);
           if (!online) {
-            await redisClient.sendCommand(["ZREM", "drivers:geo", String(user.id)]).catch(() => {});
-            await redisClient.del(`driver:loc:${user.id}`);
             return ack && ack({ ok: false, reason: "driver_not_online" });
           }
+          await markDriverOnline(user.id, redisClient);
 
           const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
           await redisService.setJSON(`driver:loc:${user.id}`, locObj, 3600);
@@ -598,7 +598,7 @@ const init = async (io) => {
             if (driver.isDebtBlocked || driver.blockReason === "debt") continue;
             if (!driverCanReceiveService(driver.vehicleCategory || "ordinary", serviceType)) continue;
 
-            const isOnline = await redisClient.sIsMember("drivers:online", String(did));
+            const isOnline = await isDriverOnlineFresh(did, redisClient);
             if (!isOnline) continue;
 
             const busyRideId = await redisClient.get(`driver:busy:${did}`);
