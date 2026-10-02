@@ -242,8 +242,19 @@ const init = async (io) => {
         }
       });
 
-      socket.on("driver:offline", async () => {
-        try { await cleanDriverRealtimeState(user.id, redisClient); } catch (e) {}
+      socket.on("driver:offline", async (data = {}) => {
+        try {
+          if (data?.manual !== true && data?.reason !== "manual") {
+            return socket.emit("driver:offline_ack", {
+              ok: false,
+              ignored: true,
+              reason: "manual_required",
+            });
+          }
+
+          await cleanDriverRealtimeState(user.id, redisClient);
+          socket.emit("driver:offline_ack", { ok: true });
+        } catch (e) {}
       });
 
       // تحديث موقع السائق
