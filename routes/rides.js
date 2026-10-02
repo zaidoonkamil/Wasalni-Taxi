@@ -7,7 +7,10 @@ const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
 const { Op } = require("sequelize");
 const { calculateFare, normalizeServiceType } = require("../services/areaPricing");
-const { isDriverOnlineFresh } = require("../services/driverAvailability");
+const {
+  isDriverOnlineFresh,
+  rememberPendingRequestForDriver,
+} = require("../services/driverAvailability");
 
 function roundUpTo250(amount) {
   return Math.ceil(amount / 250) * 250;
@@ -233,10 +236,22 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
           }
         : { request: newReq };
 
-      await socketService
+      const deliveredBySocket = await socketService
         .notifyDriverSocket(did, "request:new", payload)
-        .catch(() => {});
+        .catch(() => false);
+
+      if (!deliveredBySocket) {
+        const title = priorityMatch ? previousGoodDriverMessage.title : "طلب رحلة جديد";
+        const message = priorityMatch
+          ? previousGoodDriverMessage.message
+          : "لديك طلب رحلة جديد قريب منك. افتح التطبيق للقبول.";
+        notifications
+          .sendNotificationToUser(did, message, title)
+          .catch((e) => console.error("offline driver request push error:", e.message));
+      }
+
       await redisClient.sAdd(sentKey, String(did));
+      await rememberPendingRequestForDriver(did, newReq.id, redisClient);
       sentCount++;
 
       if (priorityMatch) {

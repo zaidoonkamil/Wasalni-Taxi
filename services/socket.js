@@ -7,9 +7,12 @@ const { Op } = require("sequelize");
 const { calculateFare, normalizeServiceType } = require("./areaPricing");
 const { applyCommissionWithReward } = require("./driverRewards");
 const {
+  clearPendingRequestForDrivers,
   cleanDriverRealtimeState,
   isDriverOnlineFresh,
   markDriverOnline,
+  pendingDriverRequestsKey,
+  rememberPendingRequestForDriver,
   syncDriverAvailability,
 } = require("./driverAvailability");
 
@@ -60,6 +63,42 @@ const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
   return byDriver;
 };
 
+const deliverPendingRequestsToDriver = async (driverId, redisClient) => {
+  if (!ioInstance) return;
+
+  const sid = await redisClient.get(`socket:driver:${driverId}`);
+  if (!sid) return;
+
+  const requestIds = await redisClient
+    .sMembers(pendingDriverRequestsKey(driverId))
+    .catch(() => []);
+  if (!requestIds || !requestIds.length) return;
+
+  const busyRideId = await redisClient.get(`driver:busy:${driverId}`);
+  if (busyRideId) return;
+
+  for (const requestId of requestIds) {
+    const req = await RideRequest.findByPk(requestId).catch(() => null);
+    if (!req || req.status !== "pending") {
+      await redisClient.sRem(pendingDriverRequestsKey(driverId), String(requestId)).catch(() => {});
+      continue;
+    }
+
+    const stillSent = await redisClient
+      .sIsMember(`request:sent_to:${requestId}`, String(driverId))
+      .catch(() => false);
+    const isRejected = await redisClient
+      .sIsMember(`request:rejected:${requestId}`, String(driverId))
+      .catch(() => false);
+    if (!stillSent || isRejected) {
+      await redisClient.sRem(pendingDriverRequestsKey(driverId), String(requestId)).catch(() => {});
+      continue;
+    }
+
+    ioInstance.to(sid).emit("request:new", { request: req });
+  }
+};
+
 const init = async (io) => {
   ioInstance = io;
 
@@ -86,6 +125,21 @@ const init = async (io) => {
       const isDriver = user.role === "driver";
       const socketKey = isDriver ? `socket:driver:${user.id}` : `socket:rider:${user.id}`;
       await redisClient.set(socketKey, socket.id, { EX: 3600  });
+      if (isDriver) {
+        try {
+          const restored = await isDriverOnlineFresh(user.id, redisClient);
+          if (restored) {
+            await markDriverOnline(user.id, redisClient);
+            socket.emit("driver:online_restored", {
+              ok: true,
+              ttlSeconds: 30 * 60,
+            });
+            await deliverPendingRequestsToDriver(user.id, redisClient);
+          }
+        } catch (e) {
+          console.error("driver online restore error", e.message);
+        }
+      }
         const refreshSocketKey = async () => {
           try {
             await redisClient.set(socketKey, socket.id, { EX: 3600 });
@@ -106,6 +160,7 @@ const init = async (io) => {
           const key = `request:rejected:${requestId}`;
           await redisClient.sAdd(key, String(user.id));
           await redisClient.expire(key, 3600);
+          await redisClient.sRem(pendingDriverRequestsKey(user.id), String(requestId));
 
           socket.emit("request:rejected_ack", { ok: true, requestId });
         } catch (e) {
@@ -116,12 +171,9 @@ const init = async (io) => {
 
       socket.on("disconnect", async () => {
           try {
-            await redisClient.del(socketKey);
-            if (isDriver) {
-              await redisClient.del(`driver:state:${user.id}`);
-              try { await redisClient.sRem("drivers:online", String(user.id)); } catch (e) {}
-              await redisClient.sendCommand(["ZREM", "drivers:geo", String(user.id)]);
-              await redisClient.del(`driver:loc:${user.id}`);
+            const currentSocketId = await redisClient.get(socketKey);
+            if (currentSocketId === socket.id) {
+              await redisClient.del(socketKey);
             }
           } catch (e) {
             console.error("socket disconnect cleanup", e.message);
@@ -166,9 +218,27 @@ const init = async (io) => {
 
           await markDriverOnline(user.id, redisClient);
           await redisClient.set(socketKey, socket.id, { EX: 3600 });
+          await deliverPendingRequestsToDriver(user.id, redisClient);
           console.log("driver online:", user.id);
         } catch (e) {
           console.error("driver:online error", e.message);
+        }
+      });
+
+      socket.on("driver:restore_online_state", async () => {
+        try {
+          const restored = await isDriverOnlineFresh(user.id, redisClient);
+          if (!restored) return socket.emit("driver:online_restored", { ok: false });
+
+          await markDriverOnline(user.id, redisClient);
+          await redisClient.set(socketKey, socket.id, { EX: 3600 });
+          socket.emit("driver:online_restored", {
+            ok: true,
+            ttlSeconds: 30 * 60,
+          });
+          await deliverPendingRequestsToDriver(user.id, redisClient);
+        } catch (e) {
+          console.error("driver:restore_online_state error", e.message);
         }
       });
 
@@ -306,9 +376,8 @@ const init = async (io) => {
               try { await notifications.sendNotificationToUser(req.rider_id, "تم قبول طلبك", "السائق في الطريق"); } catch (e) {}
             }
 
-            const sentKey = `request:sent_to:${req.id}`;
             try {
-              const sentDriverIds = await redisClient.sMembers(sentKey);
+              const sentDriverIds = await clearPendingRequestForDrivers(req.id, redisClient);
               for (const did of sentDriverIds) {
                 if (String(did) === String(user.id)) continue;
                 const sid = await redisClient.get(`socket:driver:${did}`);
@@ -320,8 +389,6 @@ const init = async (io) => {
                   });
                 }
               }
-              await redisClient.del(sentKey);
-              await redisClient.del(`request:rejected:${req.id}`);
             } catch (notifyErr) {
               console.error("notify request:taken error", notifyErr.message);
             }
@@ -391,8 +458,7 @@ const init = async (io) => {
           if (req.driver_id) {
             await redisClient.del(`driver:busy:${req.driver_id}`);
           }
-          await redisClient.del(`request:sent_to:${req.id}`);
-          await redisClient.del(`request:rejected:${req.id}`);
+          await clearPendingRequestForDrivers(req.id, redisClient);
 
           const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
           if (riderSocketId && ioInstance) {
@@ -608,25 +674,23 @@ const init = async (io) => {
             const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
             if (isRejected) continue;
 
+            const previousRating = previousGoodRatingsByDriver.get(String(did));
+            const priorityMatch = previousRating != null;
+            const payload = priorityMatch
+              ? {
+                  request: newReq,
+                  priorityMatch: {
+                    type: "previous_good_rating",
+                    rating: previousRating,
+                    title: previousGoodDriverMessage.title,
+                    message: previousGoodDriverMessage.message,
+                  },
+                }
+              : { request: newReq };
+
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
             if (driverSocketId && ioInstance) {
-              const previousRating = previousGoodRatingsByDriver.get(String(did));
-              const priorityMatch = previousRating != null;
-              const payload = priorityMatch
-                ? {
-                    request: newReq,
-                    priorityMatch: {
-                      type: "previous_good_rating",
-                      rating: previousRating,
-                      title: previousGoodDriverMessage.title,
-                      message: previousGoodDriverMessage.message,
-                    },
-                  }
-                : { request: newReq };
-
               ioInstance.to(driverSocketId).emit("request:new", payload);
-              sentCount++;
-              await redisClient.sAdd(sentKey, String(did));
 
               if (priorityMatch) {
                 notifications
@@ -637,7 +701,19 @@ const init = async (io) => {
                   )
                   .catch((e) => console.error("previous good driver push error:", e.message));
               }
+            } else {
+              const title = priorityMatch ? previousGoodDriverMessage.title : "طلب رحلة جديد";
+              const message = priorityMatch
+                ? previousGoodDriverMessage.message
+                : "لديك طلب رحلة جديد قريب منك. افتح التطبيق للقبول.";
+              notifications
+                .sendNotificationToUser(did, message, title)
+                .catch((e) => console.error("offline driver request push error:", e.message));
             }
+
+            sentCount++;
+            await redisClient.sAdd(sentKey, String(did));
+            await rememberPendingRequestForDriver(did, newReq.id, redisClient);
           }
 
           await redisClient.expire(sentKey, 3600);
@@ -683,8 +759,7 @@ const init = async (io) => {
             }
           }
 
-          const sentKey = `request:sent_to:${req.id}`;
-          const driverIds = await redisClient.sMembers(sentKey);
+          const driverIds = await clearPendingRequestForDrivers(req.id, redisClient);
 
           for (const did of driverIds || []) {
             const sid = await redisClient.get(`socket:driver:${did}`);
@@ -695,9 +770,6 @@ const init = async (io) => {
               });
             }
           }
-
-          await redisClient.del(sentKey);
-          await redisClient.del(`request:rejected:${req.id}`);
 
         } catch (e) {
           console.error("rider:cancel_request error", e.message);
