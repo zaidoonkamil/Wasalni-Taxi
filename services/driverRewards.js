@@ -1,5 +1,6 @@
 const { DriverRewardLedger, DriverDebtLedger } = require("../models");
 const redisService = require("./redis");
+const { cleanDriverRealtimeState } = require("./driverAvailability");
 
 const parseAmount = (value) => {
   const normalized = String(value || 0).replace(/[,\u066C\s]/g, "");
@@ -94,10 +95,7 @@ const applyCommissionWithReward = async ({
       try {
         const redisClient = redisService.client();
         await redisClient.sAdd("drivers:debt_blocked", String(driver.id));
-        await redisClient.del(`driver:state:${driver.id}`);
-        await redisClient.sRem("drivers:online", String(driver.id));
-        await redisClient.sendCommand(["ZREM", "drivers:geo", String(driver.id)]);
-        await redisClient.del(`driver:loc:${driver.id}`);
+        await cleanDriverRealtimeState(driver.id, redisClient);
       } catch (e) {}
     }
   }

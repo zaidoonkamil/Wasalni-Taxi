@@ -14,6 +14,7 @@ const adsRouter = require("./routes/ads");
 const ratingsRouter = require("./routes/ratings").router;
 const { startWhatsAppAutoInit } = require("./services/waSender");
 const ensureSchema = require("./services/ensureSchema");
+const { reconcileAllDriverAvailability } = require("./services/driverAvailability");
 
 const redisService = require("./services/redis");
 const socketService = require("./services/socket");
@@ -64,6 +65,12 @@ const io = new Server(server, {
     
     await sequelize.sync({ force: false });
     await ensureSchema();
+    try {
+      const result = await reconcileAllDriverAvailability();
+      console.log("✅ Driver availability synced!", result);
+    } catch (e) {
+      console.error("⚠️ Driver availability sync failed:", e.message);
+    }
     if (process.env.WHATSAPP_INTERNAL_AUTO_INIT === "true") {
       startWhatsAppAutoInit();
     }

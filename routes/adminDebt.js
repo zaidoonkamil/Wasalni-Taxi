@@ -7,6 +7,10 @@ const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
 const { grantDriverReward } = require("../services/driverRewards");
+const {
+  getDriverDebtLimit,
+  syncDriverAvailability,
+} = require("../services/driverAvailability");
 
 // helper to get setting value
 const getSetting = async (key) => {
@@ -14,14 +18,8 @@ const getSetting = async (key) => {
   return s ? s.value : null;
 };
 
-const categoryPrefix = (category) => (category === "super" ? "SUPER_" : "");
-
 const getDebtLimitForDriver = async (driver) => {
-  if (driver.driverDebtLimitOverride != null) return parseFloat(driver.driverDebtLimitOverride);
-  const prefix = categoryPrefix(driver.vehicleCategory);
-  const value = await getSettingValue(`${prefix}DRIVER_DEBT_LIMIT`);
-  if (value != null) return parseFloat(value);
-  return parseFloat((await getSettingValue("DRIVER_DEBT_LIMIT")) || 0);
+  return getDriverDebtLimit(driver);
 };
 
 const applyDriverDebtPayment = async ({ driver, amount, note, adminId, transaction }) => {
@@ -42,7 +40,8 @@ const applyDriverDebtPayment = async ({ driver, amount, note, adminId, transacti
   );
 
   const limitVal = await getDebtLimitForDriver(driver);
-  if (driver.isDebtBlocked && next < limitVal) {
+  const belowLimit = limitVal == null ? next <= 0 : next < limitVal;
+  if ((driver.isDebtBlocked || driver.blockReason === "debt") && belowLimit) {
     driver.isDebtBlocked = false;
     driver.blockReason = null;
   }
@@ -358,6 +357,10 @@ router.post("/admin/drivers/:id/debt/pay", requireAdmin, async (req, res) => {
 
     await t.commit();
 
+    try {
+      const redis = await redisService.init();
+      await syncDriverAvailability(driver, { redisClient: redis });
+    } catch (e) {}
     await notifyDriverDebtUpdated(driver, parsed);
 
     res.json({ success: true, driver });
@@ -405,10 +408,9 @@ router.post("/admin/drivers/debt/pay-bulk", requireAdmin, async (req, res) => {
 
     await t.commit();
 
+    const redis = await redisService.init();
     for (const driver of drivers) {
-      if (!driver.isDebtBlocked) {
-        try { await redisService.client().sRem("drivers:debt_blocked", String(driver.id)); } catch (e) {}
-      }
+      try { await syncDriverAvailability(driver, { redisClient: redis }); } catch (e) {}
       await notifyDriverDebtUpdated(driver, parsed);
     }
 

@@ -5,6 +5,8 @@ const multer = require("multer");
 const { Op, fn, col } = require("sequelize");
 const { User, UserDevice, DriverRating, DriverRewardLedger } = require("../models");
 const uploadImage = require("../middlewares/uploads");
+const redisService = require("../services/redis");
+const { syncDriverAvailability } = require("../services/driverAvailability");
 const router = express.Router();
 const upload = multer();
 const saltRounds = 10;
@@ -1153,6 +1155,15 @@ router.patch("/admin/users/:id", requireAdmin, upload.none(), async (req, res) =
     await target.save();
 
     if (target.role === "driver") {
+      try {
+        const redis = await redisService.init();
+        await syncDriverAvailability(target, { redisClient: redis });
+      } catch (e) {
+        console.error("sync driver redis after admin update error:", e.message);
+      }
+    }
+
+    if (target.role === "driver") {
       const [driverWithSummary] = await attachDriverRatingSummaries([target]);
       return res.status(200).json({
         message: "تم تحديث بيانات الكابتن بنجاح",
@@ -1232,6 +1243,13 @@ router.patch("/drivers/:id/activate", requireAdmin, async (req, res) => {
     driver.status = "active";
     await driver.save();
 
+    try {
+      const redis = await redisService.init();
+      await syncDriverAvailability(driver, { redisClient: redis });
+    } catch (e) {
+      console.error("sync driver redis after activation error:", e.message);
+    }
+
     return res.status(200).json({
       message: "تم تفعيل السائق بنجاح",
       driver: safeUser(driver),
@@ -1284,6 +1302,14 @@ router.patch("/users/:id/status", requireAdmin, upload.none(), async (req, res) 
     }
     target.status = status;
     await target.save();
+    if (target.role === "driver") {
+      try {
+        const redis = await redisService.init();
+        await syncDriverAvailability(target, { redisClient: redis });
+      } catch (e) {
+        console.error("sync driver redis after status update error:", e.message);
+      }
+    }
     return res.status(200).json({
       message: "تم تحديث حالة المستخدم بنجاح",
       user: safeUser(target),

@@ -199,15 +199,18 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     const driverIds = (raw || []).map(String).slice(0, 30);
     const driverRows = await User.findAll({
       where: { id: { [Op.in]: driverIds }, role: "driver", status: "active" },
-      attributes: ["id", "vehicleCategory"],
+      attributes: ["id", "vehicleCategory", "isDebtBlocked", "blockReason"],
     });
-    const driverCategoryById = new Map(driverRows.map((driver) => [String(driver.id), driver.vehicleCategory || "ordinary"]));
+    const driverById = new Map(driverRows.map((driver) => [String(driver.id), driver]));
     const previousGoodRatingsByDriver = await getPreviousGoodDriverRatings(user.id, driverIds);
     const sentKey = `request:sent_to:${newReq.id}`;
     let sentCount = 0;
 
     for (const did of driverIds) {
-      if (!driverCanReceiveService(driverCategoryById.get(String(did)), serviceType)) continue;
+      const driver = driverById.get(String(did));
+      if (!driver) continue;
+      if (driver.isDebtBlocked || driver.blockReason === "debt") continue;
+      if (!driverCanReceiveService(driver.vehicleCategory || "ordinary", serviceType)) continue;
 
       const isOnline = await redisClient.sIsMember("drivers:online", String(did));
       if (!isOnline) continue;

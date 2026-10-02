@@ -6,6 +6,10 @@ const notifications = require("./notifications") || require("../services/notific
 const { Op } = require("sequelize");
 const { calculateFare, normalizeServiceType } = require("./areaPricing");
 const { applyCommissionWithReward } = require("./driverRewards");
+const {
+  cleanDriverRealtimeState,
+  syncDriverAvailability,
+} = require("./driverAvailability");
 
 let ioInstance = null;
 
@@ -125,11 +129,39 @@ const init = async (io) => {
       // اتصال السائق
       socket.on("driver:online", async () => {
         try {
-          const isDebtBlocked = await redisClient.sIsMember("drivers:debt_blocked", String(user.id));
-          if (isDebtBlocked) {
-            socket.emit("driver:debt_blocked", { ok: false, reason: "debt_blocked" });
+          const driver = await User.findByPk(user.id, {
+            attributes: [
+              "id",
+              "role",
+              "status",
+              "vehicleCategory",
+              "driverDebt",
+              "driverDebtLimitOverride",
+              "isDebtBlocked",
+              "blockReason",
+            ],
+          });
+          const availability = await syncDriverAvailability(driver, { redisClient });
+          if (!availability.canReceive && availability.reason === "not_active") {
+            socket.emit("driver:not_active", {
+              ok: false,
+              status: availability.status || "not_found",
+              message: availability.message,
+            });
             return;
           }
+
+          if (!availability.canReceive && availability.reason === "debt_blocked") {
+            socket.emit("driver:debt_blocked", {
+              ok: false,
+              reason: "debt_blocked",
+              message: availability.message,
+              debt: availability.debt,
+              debtLimit: availability.debtLimit,
+            });
+            return;
+          }
+
           await redisClient.set(`driver:state:${user.id}`, "online", { EX: 3600 });
           await redisClient.sAdd("drivers:online", String(user.id));
           await redisClient.set(socketKey, socket.id, { EX: 3600 });
@@ -140,10 +172,7 @@ const init = async (io) => {
       });
 
       socket.on("driver:offline", async () => {
-        await redisClient.del(`driver:state:${user.id}`);
-        try { await redisClient.sRem("drivers:online", String(user.id)); } catch (e) {}
-        try { await redisClient.sendCommand(["ZREM", "drivers:geo", String(user.id)]); } catch (e) {}
-        try { await redisClient.del(`driver:loc:${user.id}`); } catch (e) {}
+        try { await cleanDriverRealtimeState(user.id, redisClient); } catch (e) {}
       });
 
       // تحديث موقع السائق
@@ -163,6 +192,13 @@ const init = async (io) => {
 
           if (lat == null || lng == null) {
             return ack && ack({ ok: false, reason: "missing_lat_lng" });
+          }
+
+          const online = await redisClient.sIsMember("drivers:online", String(user.id));
+          if (!online) {
+            await redisClient.sendCommand(["ZREM", "drivers:geo", String(user.id)]).catch(() => {});
+            await redisClient.del(`driver:loc:${user.id}`);
+            return ack && ack({ ok: false, reason: "driver_not_online" });
           }
 
           const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
@@ -209,8 +245,13 @@ const init = async (io) => {
       socket.on("driver:accept_request", async ({ requestId }) => {
         try {
           const driver = await User.findByPk(user.id);
-          if (driver && (driver.isDebtBlocked || driver.status === "blocked" || driver.blockReason === "debt")) {
-            socket.emit("request:accept_failed", { requestId, reason: "debt_blocked" });
+          const availability = await syncDriverAvailability(driver, { redisClient });
+          if (!availability.canReceive) {
+            socket.emit("request:accept_failed", {
+              requestId,
+              reason: availability.reason,
+              message: availability.message,
+            });
             return;
           }
 
@@ -543,16 +584,19 @@ const init = async (io) => {
           const driverIds = (nearby || []).map(String).slice(0, 30);
           const driverRows = await User.findAll({
             where: { id: { [Op.in]: driverIds }, role: "driver", status: "active" },
-            attributes: ["id", "vehicleCategory"],
+            attributes: ["id", "vehicleCategory", "isDebtBlocked", "blockReason"],
           });
-          const driverCategoryById = new Map(driverRows.map((driver) => [String(driver.id), driver.vehicleCategory || "ordinary"]));
+          const driverById = new Map(driverRows.map((driver) => [String(driver.id), driver]));
           const previousGoodRatingsByDriver = await getPreviousGoodDriverRatings(user.id, driverIds);
 
           let sentCount = 0;
           const sentKey = `request:sent_to:${newReq.id}`;
 
           for (const did of driverIds) {
-            if (!driverCanReceiveService(driverCategoryById.get(String(did)), serviceType)) continue;
+            const driver = driverById.get(String(did));
+            if (!driver) continue;
+            if (driver.isDebtBlocked || driver.blockReason === "debt") continue;
+            if (!driverCanReceiveService(driver.vehicleCategory || "ordinary", serviceType)) continue;
 
             const isOnline = await redisClient.sIsMember("drivers:online", String(did));
             if (!isOnline) continue;
@@ -563,9 +607,6 @@ const init = async (io) => {
             const rejectedKey = `request:rejected:${newReq.id}`;
             const isRejected = await redisClient.sIsMember(rejectedKey, String(did));
             if (isRejected) continue;
-
-            const isDebtBlocked = await redisClient.sIsMember("drivers:debt_blocked", String(did));
-            if (isDebtBlocked) continue;
 
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
             if (driverSocketId && ioInstance) {
