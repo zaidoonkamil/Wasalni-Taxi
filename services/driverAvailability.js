@@ -6,7 +6,7 @@ const parseAmount = (value) => {
   return Number.isFinite(amount) ? amount : 0;
 };
 
-const DRIVER_ONLINE_TTL_SECONDS = 90;
+const DRIVER_ONLINE_TTL_SECONDS = 30 * 60;
 const driverOnlineKey = (driverId) => `driver:online:${driverId}`;
 
 const categoryPrefix = (category) => (category === "super" ? "SUPER_" : "");
