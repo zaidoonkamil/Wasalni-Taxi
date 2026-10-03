@@ -591,12 +591,17 @@ const init = async (io) => {
           let pricingZoneId = null;
           let pricingRouteId = null;
 
+          const clientKm = Number.isFinite(Number(distanceKm)) ? Number(distanceKm) : null;
           const serverKm =
             pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
               ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
               : null;
 
-          const dKm = serverKm != null ? Number(serverKm.toFixed(3)) : null;
+          const dKm = clientKm != null && clientKm > 0
+            ? Number(clientKm.toFixed(3))
+            : serverKm != null
+              ? Number(serverKm.toFixed(3))
+              : null;
           const dur = durationMin != null ? parseFloat(durationMin) : null;
 
 
@@ -617,6 +622,8 @@ const init = async (io) => {
               serviceType,
               pricingZoneId,
               pricingRouteId,
+              distanceKm: dKm,
+              distanceSource: clientKm != null && clientKm > 0 ? "client_route" : "server_haversine",
               routePricePerKm: fare.pricingRoute?.pricePerKm,
               zonePricePerKm: fare.pricingZone?.pricePerKm,
               pickupZone: fare.pickupZone,

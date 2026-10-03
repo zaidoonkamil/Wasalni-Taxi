@@ -25,6 +25,17 @@ const previousGoodDriverMessage = {
   message: "أحد الزبائن الذين أوصلتهم سابقاً وقيّم رحلتك بشكل جيد يطلب تكسي الآن بالقرب منك.",
 };
 
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const toRad = (x) => (Number(x) * Math.PI) / 180;
+  const dLat = toRad(lat2) - toRad(lat1);
+  const dLng = toRad(lng2) - toRad(lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
   if (!riderId || !driverIds.length) return new Map();
 
@@ -121,7 +132,14 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
         ? parseFloat(bodyDuration)
         : (pickup.durationMin != null ? parseFloat(pickup.durationMin) : null);
 
-    if (!Number.isFinite(dKm)) dKm = null;
+    const clientDistanceProvided = Number.isFinite(dKm) && dKm > 0;
+    if (!Number.isFinite(dKm) || dKm <= 0) {
+      const serverKm =
+        pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
+          ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
+          : null;
+      dKm = serverKm != null ? Number(serverKm.toFixed(3)) : null;
+    }
     if (!Number.isFinite(dur)) dur = null;
 
     let estimatedFare = null;
@@ -135,6 +153,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     console.log("[POST /ride-requests] durationMin(body):", req.body.durationMin);
     console.log("[POST /ride-requests] pickup.durationMin:", pickup?.durationMin);
     console.log("[POST /ride-requests] parsed dKm:", dKm, "parsed dur:", dur);
+    console.log("[POST /ride-requests] distanceSource:", clientDistanceProvided ? "client_route" : "server_haversine");
 
     try {
       const fare = await calculateFare({
@@ -154,6 +173,8 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
         pricingAreaType,
         pricingZoneId,
         pricingRouteId,
+        distanceKm: dKm,
+        distanceSource: clientDistanceProvided ? "client_route" : "server_haversine",
         routePricePerKm: fare.pricingRoute?.pricePerKm,
         zonePricePerKm: fare.pricingZone?.pricePerKm,
         pickupZone: fare.pickupZone,
