@@ -1,7 +1,7 @@
 const axios = require("axios");
 
 const OTPIQ_BASE_URL = (process.env.OTPIQ_BASE_URL || "https://api.otpiq.com/api").replace(/\/+$/, "");
-const OTPIQ_PROVIDER = process.env.OTPIQ_PROVIDER || "whatsapp";
+const OTPIQ_PROVIDER = "whatsapp";
 const OTPIQ_TIMEOUT_MS = Number(process.env.OTPIQ_TIMEOUT_MS || 15000);
 
 function normalizeOtpiqPhone(phone = "") {
