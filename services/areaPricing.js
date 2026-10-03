@@ -84,10 +84,9 @@ async function resolveTripPricingZones(pickup, dropoff, transaction) {
   const dropoffZones = matchZones(dropoffPoint, zones);
   const pickupZone = pickupZones[0] || null;
   const dropoffZone = dropoffZones[0] || null;
+  const dropoffZoneIds = new Set(dropoffZones.map((zone) => Number(zone.id)));
   const sameZone =
-    pickupZone && dropoffZone && Number(pickupZone.id) === Number(dropoffZone.id)
-      ? pickupZone
-      : null;
+    pickupZones.find((zone) => dropoffZoneIds.has(Number(zone.id))) || null;
 
   return { pickupZone, dropoffZone, pickupZones, dropoffZones, sameZone };
 }
@@ -261,11 +260,11 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
           pricePerKm: routePerKm,
         }
       : null,
-    pickupZone: pickupZone
-      ? { id: pickupZone.id, name: pickupZone.name }
+    pickupZone: (sameZone || pickupZone)
+      ? { id: (sameZone || pickupZone).id, name: (sameZone || pickupZone).name }
       : null,
-    dropoffZone: dropoffZone
-      ? { id: dropoffZone.id, name: dropoffZone.name }
+    dropoffZone: (sameZone || dropoffZone)
+      ? { id: (sameZone || dropoffZone).id, name: (sameZone || dropoffZone).name }
       : null,
     pricingSource: routePerKm != null
       ? "zone_route"
