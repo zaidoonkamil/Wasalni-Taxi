@@ -181,7 +181,17 @@ const init = async (io) => {
       });
 
       // اتصال السائق
-      socket.on("driver:online", async () => {
+      socket.on("driver:get_online_state", async (_, ack) => {
+        try {
+          const online = await isDriverOnlineFresh(user.id, redisClient);
+          return ack && ack({ ok: true, online });
+        } catch (e) {
+          console.error("driver:get_online_state error", e.message);
+          return ack && ack({ ok: false, error: "state_unavailable" });
+        }
+      });
+
+      socket.on("driver:online", async (_, ack) => {
         try {
           const driver = await User.findByPk(user.id, {
             attributes: [
@@ -202,6 +212,7 @@ const init = async (io) => {
               status: availability.status || "not_found",
               message: availability.message,
             });
+            ack && ack({ ok: false, online: false, reason: "not_active", message: availability.message });
             return;
           }
 
@@ -213,6 +224,7 @@ const init = async (io) => {
               debt: availability.debt,
               debtLimit: availability.debtLimit,
             });
+            ack && ack({ ok: false, online: false, reason: "debt_blocked", message: availability.message });
             return;
           }
 
@@ -220,8 +232,10 @@ const init = async (io) => {
           await redisClient.set(socketKey, socket.id, { EX: 3600 });
           await deliverPendingRequestsToDriver(user.id, redisClient);
           console.log("driver online:", user.id);
+          ack && ack({ ok: true, online: true });
         } catch (e) {
           console.error("driver:online error", e.message);
+          ack && ack({ ok: false, online: false, error: "state_unavailable" });
         }
       });
 
@@ -242,19 +256,25 @@ const init = async (io) => {
         }
       });
 
-      socket.on("driver:offline", async (data = {}) => {
+      socket.on("driver:offline", async (data = {}, ack) => {
         try {
           if (data?.manual !== true && data?.reason !== "manual") {
-            return socket.emit("driver:offline_ack", {
+            const response = {
               ok: false,
               ignored: true,
               reason: "manual_required",
-            });
+            };
+            socket.emit("driver:offline_ack", response);
+            return ack && ack(response);
           }
 
           await cleanDriverRealtimeState(user.id, redisClient);
-          socket.emit("driver:offline_ack", { ok: true });
-        } catch (e) {}
+          const response = { ok: true, online: false };
+          socket.emit("driver:offline_ack", response);
+          ack && ack(response);
+        } catch (e) {
+          ack && ack({ ok: false, error: "state_unavailable" });
+        }
       });
 
       // تحديث موقع السائق

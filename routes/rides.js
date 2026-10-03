@@ -68,10 +68,19 @@ router.post("/ride-requests/estimate", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "pickup and dropoff required" });
     }
 
+    const parsedDistance = Number(distanceKm);
+    const fallbackDistance =
+      pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
+        ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
+        : null;
+    const effectiveDistance = Number.isFinite(parsedDistance) && parsedDistance > 0
+      ? parsedDistance
+      : fallbackDistance;
+
     const result = await calculateFare({
       pickup,
       dropoff,
-      distanceKm,
+      distanceKm: effectiveDistance,
       durationMin,
       serviceType,
     });

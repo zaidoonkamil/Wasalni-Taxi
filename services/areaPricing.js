@@ -218,8 +218,10 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
   const routePerKm = routePricePerKm(routePrice, normalizedService);
   const zonePerKm = routePerKm == null ? zonePricePerKm(sameZone, normalizedService) : null;
 
-  const dKm = Number.isFinite(Number(distanceKm)) ? Number(distanceKm) : null;
-  const dur = Number.isFinite(Number(durationMin)) ? Number(durationMin) : null;
+  const parsedDistance = Number(distanceKm);
+  const parsedDuration = Number(durationMin);
+  const dKm = Number.isFinite(parsedDistance) && parsedDistance > 0 ? parsedDistance : null;
+  const dur = Number.isFinite(parsedDuration) && parsedDuration >= 0 ? parsedDuration : null;
   let estimatedFare = null;
 
   if (dKm != null) {

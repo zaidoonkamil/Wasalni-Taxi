@@ -6,6 +6,7 @@ const { Op } = require("sequelize");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
+const { isDriverOnlineFresh } = require("../services/driverAvailability");
 const { AREA_TYPES, SERVICE_TYPES, normalizeAreaType, normalizeServiceType, normalizeRouteZoneIds } = require("../services/areaPricing");
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
@@ -394,6 +395,8 @@ router.get("/admin/drivers/online", requireAdmin, async (req, res) => {
     const ids = await redis.sMembers("drivers:online").catch(() => []);
     const list = [];
     for (const id of ids) {
+      const online = await isDriverOnlineFresh(id, redis).catch(() => false);
+      if (!online) continue;
       const loc = await redis.get(`driver:loc:${id}`).catch(() => null);
       const last = loc ? JSON.parse(loc) : null;
       const user = await User.findByPk(id, { attributes: { exclude: ["password"] } }).catch(() => null);
