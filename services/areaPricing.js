@@ -1,4 +1,5 @@
 const { AreaPricingZone, AreaZoneRoutePrice, PricingSetting } = require("../models");
+const { Op } = require("sequelize");
 
 const AREA_TYPES = ["rich", "poor", "mixed"];
 const SERVICE_TYPES = ["ordinary", "super"];
@@ -62,7 +63,14 @@ async function resolveTripPricingZones(pickup, dropoff, transaction) {
   const pickupPoint = parsePoint(pickup);
   const dropoffPoint = parsePoint(dropoff);
   if (!pickupPoint || !dropoffPoint) {
-    return { pickupZone: null, dropoffZone: null, sameZone: null };
+    return {
+      pickupZone: null,
+      dropoffZone: null,
+      pickupZones: [],
+      dropoffZones: [],
+      commonZones: [],
+      sameZone: null,
+    };
   }
 
   const zones = await AreaPricingZone.findAll({
@@ -85,10 +93,19 @@ async function resolveTripPricingZones(pickup, dropoff, transaction) {
   const pickupZone = pickupZones[0] || null;
   const dropoffZone = dropoffZones[0] || null;
   const dropoffZoneIds = new Set(dropoffZones.map((zone) => Number(zone.id)));
-  const sameZone =
-    pickupZones.find((zone) => dropoffZoneIds.has(Number(zone.id))) || null;
+  const commonZones = pickupZones.filter((zone) =>
+    dropoffZoneIds.has(Number(zone.id))
+  );
+  const sameZone = commonZones[0] || null;
 
-  return { pickupZone, dropoffZone, pickupZones, dropoffZones, sameZone };
+  return {
+    pickupZone,
+    dropoffZone,
+    pickupZones,
+    dropoffZones,
+    commonZones,
+    sameZone,
+  };
 }
 
 async function resolveTripPricingZone(pickup, dropoff, transaction) {
@@ -179,6 +196,34 @@ async function findBestZoneRoutePrice(pickupZones, dropoffZones, transaction) {
   return { routePrice: null, pickupZone: null, dropoffZone: null };
 }
 
+async function findUnlinkedCommonZone(commonZones, transaction) {
+  const zoneIds = (commonZones || []).map((zone) => Number(zone.id));
+  if (!zoneIds.length) return null;
+
+  const linkedRoutes = await AreaZoneRoutePrice.findAll({
+    where: {
+      active: true,
+      [Op.or]: [
+        { fromZoneId: { [Op.in]: zoneIds } },
+        { toZoneId: { [Op.in]: zoneIds } },
+      ],
+    },
+    attributes: ["fromZoneId", "toZoneId"],
+    ...(transaction ? { transaction } : {}),
+    raw: true,
+  });
+
+  const linkedZoneIds = new Set();
+  for (const route of linkedRoutes) {
+    linkedZoneIds.add(Number(route.fromZoneId));
+    linkedZoneIds.add(Number(route.toZoneId));
+  }
+
+  return (
+    commonZones.find((zone) => !linkedZoneIds.has(Number(zone.id))) || null
+  );
+}
+
 async function findPricingSetting(serviceType, areaType, transaction) {
   const normalizedService = normalizeServiceType(serviceType);
   const normalizedArea = normalizeAreaType(areaType);
@@ -208,15 +253,32 @@ async function findPricingSetting(serviceType, areaType, transaction) {
 
 async function calculateFare({ pickup, dropoff, distanceKm, durationMin, serviceType, transaction }) {
   const normalizedService = normalizeServiceType(serviceType);
-  const { pickupZone, dropoffZone, pickupZones, dropoffZones, sameZone } =
+  const {
+    pickupZone,
+    dropoffZone,
+    pickupZones,
+    dropoffZones,
+    commonZones,
+    sameZone,
+  } =
     await resolveTripPricingZones(pickup, dropoff, transaction);
-  const routePrice = sameZone
+  const unlinkedCommonZone = await findUnlinkedCommonZone(
+    commonZones,
+    transaction
+  );
+  const routeMatch = unlinkedCommonZone
+    ? { routePrice: null, pickupZone: null, dropoffZone: null }
+    : await findBestZoneRoutePrice(pickupZones, dropoffZones, transaction);
+  const routePrice = routeMatch.routePrice;
+  const selectedSameZone = routePrice
     ? null
-    : await findZoneRoutePrice(pickupZone, dropoffZone, transaction);
+    : unlinkedCommonZone || sameZone;
   const areaType = "mixed";
   const pricing = await findPricingSetting(normalizedService, areaType, transaction);
   const routePerKm = routePricePerKm(routePrice, normalizedService);
-  const zonePerKm = routePerKm == null ? zonePricePerKm(sameZone, normalizedService) : null;
+  const zonePerKm = routePerKm == null
+    ? zonePricePerKm(selectedSameZone, normalizedService)
+    : null;
 
   const parsedDistance = Number(distanceKm);
   const parsedDuration = Number(durationMin);
@@ -245,10 +307,10 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
   return {
     areaType,
     pricing,
-    pricingZone: sameZone && zonePerKm != null
+    pricingZone: selectedSameZone && zonePerKm != null
       ? {
-          id: sameZone.id,
-          name: sameZone.name,
+          id: selectedSameZone.id,
+          name: selectedSameZone.name,
           pricePerKm: zonePerKm,
         }
       : null,
@@ -260,11 +322,17 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
           pricePerKm: routePerKm,
         }
       : null,
-    pickupZone: (sameZone || pickupZone)
-      ? { id: (sameZone || pickupZone).id, name: (sameZone || pickupZone).name }
+    pickupZone: (routeMatch.pickupZone || selectedSameZone || pickupZone)
+      ? {
+          id: (routeMatch.pickupZone || selectedSameZone || pickupZone).id,
+          name: (routeMatch.pickupZone || selectedSameZone || pickupZone).name,
+        }
       : null,
-    dropoffZone: (sameZone || dropoffZone)
-      ? { id: (sameZone || dropoffZone).id, name: (sameZone || dropoffZone).name }
+    dropoffZone: (routeMatch.dropoffZone || selectedSameZone || dropoffZone)
+      ? {
+          id: (routeMatch.dropoffZone || selectedSameZone || dropoffZone).id,
+          name: (routeMatch.dropoffZone || selectedSameZone || dropoffZone).name,
+        }
       : null,
     pricingSource: routePerKm != null
       ? "zone_route"
