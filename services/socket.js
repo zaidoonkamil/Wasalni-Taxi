@@ -613,6 +613,17 @@ const init = async (io) => {
             pricingAreaType = fare.areaType;
             pricingZoneId = fare.pricingZone?.id || null;
             pricingRouteId = fare.pricingRoute?.id || null;
+            console.log("[socket rider:create_request] pricing:", {
+              serviceType,
+              pricingZoneId,
+              pricingRouteId,
+              routePricePerKm: fare.pricingRoute?.pricePerKm,
+              zonePricePerKm: fare.pricingZone?.pricePerKm,
+              pickupZone: fare.pickupZone,
+              dropoffZone: fare.dropoffZone,
+              matchedPickupZones: fare.matchedPickupZones,
+              matchedDropoffZones: fare.matchedDropoffZones,
+            });
           } catch (e) {
             console.error("pricing calc error:", e.message);
           }

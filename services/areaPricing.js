@@ -35,16 +35,27 @@ function parsePoint(point) {
 function matchZone(point, zones) {
   if (!point) return null;
 
-  let selected = null;
+  return matchZones(point, zones)[0] || null;
+}
+
+function matchZones(point, zones) {
+  if (!point) return [];
+
+  const matched = [];
   for (const zone of zones) {
     const distance = haversineMeters(point.lat, point.lng, zone.centerLat, zone.centerLng);
     const radius = Number(zone.radiusMeters || 0);
     if (radius <= 0 || distance > radius) continue;
-    if (!selected || distance < selected.distance) {
-      selected = { zone, distance };
-    }
+    matched.push({ zone, distance, radius });
   }
-  return selected?.zone || null;
+
+  matched.sort((a, b) => {
+    const radiusDiff = a.radius - b.radius;
+    if (radiusDiff !== 0) return radiusDiff;
+    return a.distance - b.distance;
+  });
+
+  return matched.map((item) => item.zone);
 }
 
 async function resolveTripPricingZones(pickup, dropoff, transaction) {
@@ -69,14 +80,16 @@ async function resolveTripPricingZones(pickup, dropoff, transaction) {
     raw: true,
   });
 
-  const pickupZone = matchZone(pickupPoint, zones);
-  const dropoffZone = matchZone(dropoffPoint, zones);
+  const pickupZones = matchZones(pickupPoint, zones);
+  const dropoffZones = matchZones(dropoffPoint, zones);
+  const pickupZone = pickupZones[0] || null;
+  const dropoffZone = dropoffZones[0] || null;
   const sameZone =
     pickupZone && dropoffZone && Number(pickupZone.id) === Number(dropoffZone.id)
       ? pickupZone
       : null;
 
-  return { pickupZone, dropoffZone, sameZone };
+  return { pickupZone, dropoffZone, pickupZones, dropoffZones, sameZone };
 }
 
 async function resolveTripPricingZone(pickup, dropoff, transaction) {
@@ -128,6 +141,45 @@ async function findZoneRoutePrice(pickupZone, dropoffZone, transaction) {
   });
 }
 
+async function findBestZoneRoutePrice(pickupZones, dropoffZones, transaction) {
+  const pairs = [];
+  const seen = new Set();
+
+  for (const pickupZone of pickupZones || []) {
+    for (const dropoffZone of dropoffZones || []) {
+      const ids = normalizeRouteZoneIds(pickupZone?.id, dropoffZone?.id);
+      if (!ids) continue;
+
+      const key = `${ids.fromZoneId}:${ids.toZoneId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push({ ...ids, pickupZone, dropoffZone });
+    }
+  }
+
+  for (const pair of pairs) {
+    const routePrice = await AreaZoneRoutePrice.findOne({
+      where: {
+        fromZoneId: pair.fromZoneId,
+        toZoneId: pair.toZoneId,
+        active: true,
+      },
+      ...(transaction ? { transaction } : {}),
+      raw: true,
+    });
+
+    if (routePrice) {
+      return {
+        routePrice,
+        pickupZone: pair.pickupZone,
+        dropoffZone: pair.dropoffZone,
+      };
+    }
+  }
+
+  return { routePrice: null, pickupZone: null, dropoffZone: null };
+}
+
 async function findPricingSetting(serviceType, areaType, transaction) {
   const normalizedService = normalizeServiceType(serviceType);
   const normalizedArea = normalizeAreaType(areaType);
@@ -157,8 +209,10 @@ async function findPricingSetting(serviceType, areaType, transaction) {
 
 async function calculateFare({ pickup, dropoff, distanceKm, durationMin, serviceType, transaction }) {
   const normalizedService = normalizeServiceType(serviceType);
-  const { pickupZone, dropoffZone, sameZone } = await resolveTripPricingZones(pickup, dropoff, transaction);
-  const routePrice = await findZoneRoutePrice(pickupZone, dropoffZone, transaction);
+  const { pickupZone, dropoffZone, pickupZones, dropoffZones, sameZone } =
+    await resolveTripPricingZones(pickup, dropoff, transaction);
+  const routeMatch = await findBestZoneRoutePrice(pickupZones, dropoffZones, transaction);
+  const routePrice = routeMatch.routePrice;
   const areaType = "mixed";
   const pricing = await findPricingSetting(normalizedService, areaType, transaction);
   const routePerKm = routePricePerKm(routePrice, normalizedService);
@@ -204,8 +258,18 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
           pricePerKm: routePerKm,
         }
       : null,
-    pickupZone: pickupZone ? { id: pickupZone.id, name: pickupZone.name } : null,
-    dropoffZone: dropoffZone ? { id: dropoffZone.id, name: dropoffZone.name } : null,
+    pickupZone: routeMatch.pickupZone
+      ? { id: routeMatch.pickupZone.id, name: routeMatch.pickupZone.name }
+      : pickupZone
+        ? { id: pickupZone.id, name: pickupZone.name }
+        : null,
+    dropoffZone: routeMatch.dropoffZone
+      ? { id: routeMatch.dropoffZone.id, name: routeMatch.dropoffZone.name }
+      : dropoffZone
+        ? { id: dropoffZone.id, name: dropoffZone.name }
+        : null,
+    matchedPickupZones: (pickupZones || []).map((zone) => ({ id: zone.id, name: zone.name })),
+    matchedDropoffZones: (dropoffZones || []).map((zone) => ({ id: zone.id, name: zone.name })),
     estimatedFare,
   };
 }
@@ -221,6 +285,7 @@ module.exports = {
   resolveTripPricingZones,
   findPricingSetting,
   findZoneRoutePrice,
+  findBestZoneRoutePrice,
   normalizeRouteZoneIds,
   calculateFare,
 };
