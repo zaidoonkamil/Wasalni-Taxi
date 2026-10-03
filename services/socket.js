@@ -642,6 +642,7 @@ const init = async (io) => {
               serviceType,
               pricingZoneId,
               pricingRouteId,
+              pricingSource: fare.pricingSource,
               distanceKm: dKm,
               distanceSource: clientKm != null && clientKm > 0 ? "client_route" : "server_haversine",
               routePricePerKm: fare.pricingRoute?.pricePerKm,

@@ -211,8 +211,9 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
   const normalizedService = normalizeServiceType(serviceType);
   const { pickupZone, dropoffZone, pickupZones, dropoffZones, sameZone } =
     await resolveTripPricingZones(pickup, dropoff, transaction);
-  const routeMatch = await findBestZoneRoutePrice(pickupZones, dropoffZones, transaction);
-  const routePrice = routeMatch.routePrice;
+  const routePrice = sameZone
+    ? null
+    : await findZoneRoutePrice(pickupZone, dropoffZone, transaction);
   const areaType = "mixed";
   const pricing = await findPricingSetting(normalizedService, areaType, transaction);
   const routePerKm = routePricePerKm(routePrice, normalizedService);
@@ -260,16 +261,17 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
           pricePerKm: routePerKm,
         }
       : null,
-    pickupZone: routeMatch.pickupZone
-      ? { id: routeMatch.pickupZone.id, name: routeMatch.pickupZone.name }
-      : pickupZone
-        ? { id: pickupZone.id, name: pickupZone.name }
-        : null,
-    dropoffZone: routeMatch.dropoffZone
-      ? { id: routeMatch.dropoffZone.id, name: routeMatch.dropoffZone.name }
-      : dropoffZone
-        ? { id: dropoffZone.id, name: dropoffZone.name }
-        : null,
+    pickupZone: pickupZone
+      ? { id: pickupZone.id, name: pickupZone.name }
+      : null,
+    dropoffZone: dropoffZone
+      ? { id: dropoffZone.id, name: dropoffZone.name }
+      : null,
+    pricingSource: routePerKm != null
+      ? "zone_route"
+      : zonePerKm != null
+        ? "same_zone"
+        : "general",
     matchedPickupZones: (pickupZones || []).map((zone) => ({ id: zone.id, name: zone.name })),
     matchedDropoffZones: (dropoffZones || []).map((zone) => ({ id: zone.id, name: zone.name })),
     estimatedFare,
