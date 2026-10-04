@@ -266,9 +266,22 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
     commonZones,
     transaction
   );
+  const commonZoneIds = new Set(
+    (commonZones || []).map((zone) => Number(zone.id))
+  );
+  const pickupOnlyZones = (pickupZones || []).filter(
+    (zone) => !commonZoneIds.has(Number(zone.id))
+  );
+  const dropoffOnlyZones = (dropoffZones || []).filter(
+    (zone) => !commonZoneIds.has(Number(zone.id))
+  );
   const routeMatch = unlinkedCommonZone
     ? { routePrice: null, pickupZone: null, dropoffZone: null }
-    : await findBestZoneRoutePrice(pickupZones, dropoffZones, transaction);
+    : await findBestZoneRoutePrice(
+        pickupOnlyZones,
+        dropoffOnlyZones,
+        transaction
+      );
   const routePrice = routeMatch.routePrice;
   const selectedSameZone = routePrice
     ? null
