@@ -7,6 +7,7 @@ const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
 const { Op } = require("sequelize");
 const { calculateFare, normalizeServiceType } = require("../services/areaPricing");
+const { resolveRouteMetrics } = require("../services/routeMetrics");
 const {
   isDriverOnlineFresh,
   rememberPendingRequestForDriver,
@@ -62,26 +63,19 @@ const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
 
 router.post("/ride-requests/estimate", authenticateToken, async (req, res) => {
   try {
-    const { pickup, dropoff, distanceKm, durationMin } = req.body;
+    const { pickup, dropoff } = req.body;
     const serviceType = normalizeServiceType(req.body.serviceType);
     if (!pickup || !dropoff) {
       return res.status(400).json({ error: "pickup and dropoff required" });
     }
 
-    const parsedDistance = Number(distanceKm);
-    const fallbackDistance =
-      pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
-        ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
-        : null;
-    const effectiveDistance = Number.isFinite(parsedDistance) && parsedDistance > 0
-      ? parsedDistance
-      : fallbackDistance;
+    const routeMetrics = await resolveRouteMetrics(pickup, dropoff);
 
     const result = await calculateFare({
       pickup,
       dropoff,
-      distanceKm: effectiveDistance,
-      durationMin,
+      distanceKm: routeMetrics.distanceKm,
+      durationMin: routeMetrics.durationMin,
       serviceType,
     });
 
@@ -96,6 +90,9 @@ router.post("/ride-requests/estimate", authenticateToken, async (req, res) => {
       dropoffZone: result.dropoffZone,
       matchedPickupZones: result.matchedPickupZones,
       matchedDropoffZones: result.matchedDropoffZones,
+      distanceKm: routeMetrics.distanceKm,
+      durationMin: routeMetrics.durationMin,
+      distanceSource: routeMetrics.source,
       estimatedFare: result.estimatedFare,
       pricing: result.pricing,
     });
@@ -128,29 +125,9 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
       return res.json({ success: true, request: active, activeAlreadyExists: true });
     }
 
-    // parse inputs
-    const bodyDistance = req.body.distanceKm;
-    const bodyDuration = req.body.durationMin;
-
-    let dKm =
-      bodyDistance != null
-        ? parseFloat(bodyDistance)
-        : (pickup.distanceKm != null ? parseFloat(pickup.distanceKm) : null);
-
-    let dur =
-      bodyDuration != null
-        ? parseFloat(bodyDuration)
-        : (pickup.durationMin != null ? parseFloat(pickup.durationMin) : null);
-
-    const clientDistanceProvided = Number.isFinite(dKm) && dKm > 0;
-    if (!Number.isFinite(dKm) || dKm <= 0) {
-      const serverKm =
-        pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
-          ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
-          : null;
-      dKm = serverKm != null ? Number(serverKm.toFixed(3)) : null;
-    }
-    if (!Number.isFinite(dur)) dur = null;
+    const routeMetrics = await resolveRouteMetrics(pickup, dropoff);
+    const dKm = routeMetrics.distanceKm;
+    const dur = routeMetrics.durationMin;
 
     let estimatedFare = null;
     let pricingAreaType = "mixed";
@@ -158,12 +135,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
     let pricingRouteId = null;
 
     console.log("[CREATE VIA REST] rider=", req.user?.id);
-    console.log("[POST /ride-requests] distanceKm(body):", req.body.distanceKm);
-    console.log("[POST /ride-requests] pickup.distanceKm:", pickup?.distanceKm);
-    console.log("[POST /ride-requests] durationMin(body):", req.body.durationMin);
-    console.log("[POST /ride-requests] pickup.durationMin:", pickup?.durationMin);
-    console.log("[POST /ride-requests] parsed dKm:", dKm, "parsed dur:", dur);
-    console.log("[POST /ride-requests] distanceSource:", clientDistanceProvided ? "client_route" : "server_haversine");
+    console.log("[POST /ride-requests] route metrics:", routeMetrics);
 
     try {
       const fare = await calculateFare({
@@ -185,7 +157,7 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
         pricingRouteId,
         pricingSource: fare.pricingSource,
         distanceKm: dKm,
-        distanceSource: clientDistanceProvided ? "client_route" : "server_haversine",
+        distanceSource: routeMetrics.source,
         routePricePerKm: fare.pricingRoute?.pricePerKm,
         zonePricePerKm: fare.pricingZone?.pricePerKm,
         pickupZone: fare.pickupZone,

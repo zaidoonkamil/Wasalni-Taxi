@@ -5,6 +5,7 @@ const sequelize = require("../config/db");
 const notifications = require("./notifications") || require("../services/notifications");
 const { Op } = require("sequelize");
 const { calculateFare, normalizeServiceType } = require("./areaPricing");
+const { resolveRouteMetrics } = require("./routeMetrics");
 const { applyCommissionWithReward } = require("./driverRewards");
 const {
   clearPendingRequestForDrivers,
@@ -576,7 +577,7 @@ const init = async (io) => {
       socket.on("rider:create_request", async (data, ack) => {
         const t = await sequelize.transaction();
         try {
-          const { pickup, dropoff, distanceKm, durationMin } = data;
+          const { pickup, dropoff } = data;
           const serviceType = normalizeServiceType(data?.serviceType);
 
           if (!pickup || !dropoff) {
@@ -611,18 +612,9 @@ const init = async (io) => {
           let pricingZoneId = null;
           let pricingRouteId = null;
 
-          const clientKm = Number.isFinite(Number(distanceKm)) ? Number(distanceKm) : null;
-          const serverKm =
-            pickup?.lat != null && pickup?.lng != null && dropoff?.lat != null && dropoff?.lng != null
-              ? haversineKm(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
-              : null;
-
-          const dKm = clientKm != null && clientKm > 0
-            ? Number(clientKm.toFixed(3))
-            : serverKm != null
-              ? Number(serverKm.toFixed(3))
-              : null;
-          const dur = durationMin != null ? parseFloat(durationMin) : null;
+          const routeMetrics = await resolveRouteMetrics(pickup, dropoff);
+          const dKm = routeMetrics.distanceKm;
+          const dur = routeMetrics.durationMin;
 
 
           try {
@@ -644,7 +636,7 @@ const init = async (io) => {
               pricingRouteId,
               pricingSource: fare.pricingSource,
               distanceKm: dKm,
-              distanceSource: clientKm != null && clientKm > 0 ? "client_route" : "server_haversine",
+              distanceSource: routeMetrics.source,
               routePricePerKm: fare.pricingRoute?.pricePerKm,
               zonePricePerKm: fare.pricingZone?.pricePerKm,
               pickupZone: fare.pickupZone,
