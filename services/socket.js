@@ -733,25 +733,18 @@ const init = async (io) => {
             const driverSocketId = await redisClient.get(`socket:driver:${did}`);
             if (driverSocketId && ioInstance) {
               ioInstance.to(driverSocketId).emit("request:new", payload);
-
-              if (priorityMatch) {
-                notifications
-                  .sendNotificationToUser(
-                    did,
-                    previousGoodDriverMessage.message,
-                    previousGoodDriverMessage.title
-                  )
-                  .catch((e) => console.error("previous good driver push error:", e.message));
-              }
-            } else {
-              const title = priorityMatch ? previousGoodDriverMessage.title : "طلب رحلة جديد";
-              const message = priorityMatch
-                ? previousGoodDriverMessage.message
-                : "لديك طلب رحلة جديد قريب منك. افتح التطبيق للقبول.";
-              notifications
-                .sendNotificationToUser(did, message, title)
-                .catch((e) => console.error("offline driver request push error:", e.message));
             }
+
+            // نرسل إشعار دائماً حتى لو السائق متصل، حتى يعرف إن الطلب من وصلني
+            const title = priorityMatch
+              ? `وصلني - ${previousGoodDriverMessage.title}`
+              : "وصلني - طلب رحلة جديد";
+            const message = priorityMatch
+              ? previousGoodDriverMessage.message
+              : "لديك طلب رحلة جديد قريب منك. افتح التطبيق للقبول.";
+            notifications
+              .sendNotificationToUser(did, message, title)
+              .catch((e) => console.error("driver request push error:", e.message));
 
             sentCount++;
             await redisClient.sAdd(sentKey, String(did));
