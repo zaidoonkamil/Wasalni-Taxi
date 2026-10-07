@@ -125,7 +125,11 @@ const init = async (io) => {
 
       const isDriver = user.role === "driver";
       const socketKey = isDriver ? `socket:driver:${user.id}` : `socket:rider:${user.id}`;
-      await redisClient.set(socketKey, socket.id, { EX: 3600  });
+      // المفتاح ينحذف عند الـ disconnect، فالمدة الطويلة ما تترك بيانات قديمة.
+      // جانت ساعة وحدة، فبعد ساعة من الاتصال يختفي ويوكف وصول الأحداث للزبون/السائق
+      await redisClient.set(socketKey, socket.id, { EX: 60 * 60 * 24 });
+      // room ثابت للمستخدم حتى توصل الأحداث لكل اتصالاته الحالية
+      socket.join(isDriver ? `driver:${user.id}` : `rider:${user.id}`);
       if (isDriver) {
         try {
           const restored = await isDriverOnlineFresh(user.id, redisClient);
@@ -291,44 +295,58 @@ const init = async (io) => {
           socket.data = socket.data || {};
           socket.data.lastLocTs = now;
 
-          const { lat, lng, heading } = data;
+          const { lat, lng, heading, speed } = data;
 
           if (lat == null || lng == null) {
             return ack && ack({ ok: false, reason: "missing_lat_lng" });
           }
 
+          const busyReqId = await redisClient.get(`driver:busy:${user.id}`);
           const online = await isDriverOnlineFresh(user.id, redisClient);
-          if (!online) {
+
+          // السائق اللي عنده رحلة فعالة لازم موقعه يوصل للزبون حتى لو
+          // طفى استقبال الطلبات، فما نرفضه إلا إذا لا متصل ولا عنده رحلة
+          if (!online && !busyReqId) {
             return ack && ack({ ok: false, reason: "driver_not_online" });
           }
-          await markDriverOnline(user.id, redisClient);
 
-          const locObj = { lat, lng, heading: heading || null, ts: Date.now() };
+          const locObj = {
+            lat,
+            lng,
+            heading: heading ?? null,
+            speed: speed ?? null,
+            ts: Date.now(),
+          };
           await redisService.setJSON(`driver:loc:${user.id}`, locObj, 3600);
 
-          await redisClient.sendCommand([
-            "GEOADD",
-            "drivers:geo",
-            String(lng),
-            String(lat),
-            String(user.id),
-          ]);
+          if (online) {
+            await markDriverOnline(user.id, redisClient);
+            await redisClient.sendCommand([
+              "GEOADD",
+              "drivers:geo",
+              String(lng),
+              String(lat),
+              String(user.id),
+            ]);
+          }
 
           try {
-            const reqId = await redisClient.get(`driver:busy:${user.id}`);
-            if (reqId) {
-              const req = await RideRequest.findByPk(reqId);
-              if (req) {
-                const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
-                if (riderSocketId && ioInstance) {
-                  ioInstance.to(riderSocketId).emit("trip:driver_location", {
-                    requestId: req.id,
-                    driverId: user.id,
-                    lat,
-                    lng,
-                    heading: heading || null,
-                  });
-                }
+            if (busyReqId && ioInstance) {
+              // نخزن rider_id على الاتصال بدل ما نقرأ الطلب من الداتابيس كل ثانية
+              if (socket.data.tripReqId !== busyReqId) {
+                const req = await RideRequest.findByPk(busyReqId, { attributes: ["id", "rider_id"] });
+                socket.data.tripReqId = busyReqId;
+                socket.data.tripRiderId = req ? req.rider_id : null;
+              }
+              if (socket.data.tripRiderId) {
+                ioInstance.to(`rider:${socket.data.tripRiderId}`).emit("trip:driver_location", {
+                  requestId: busyReqId,
+                  driverId: user.id,
+                  lat,
+                  lng,
+                  heading: heading ?? null,
+                  speed: speed ?? null,
+                });
               }
             }
           } catch (e) {
@@ -449,10 +467,12 @@ const init = async (io) => {
             ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
           }
           try {
+            // التطبيق يخفي هذا الإشعار إذا جان مفتوح لأنه يشغل نغمة الوصول بنفسه
             await notifications.sendNotificationToUser(
               req.rider_id,
-              "السائق وصل موقعك",
-              "الكابتن وصل لموقعك، تقدر تطلع هسه"
+              "الكابتن وصل لموقعك، تقدر تطلع هسه",
+              "وصلني - السائق وصل موقعك",
+              { data: { type: "driver_arrived", requestId: String(req.id) }, priority: 10 }
             );
           } catch (e) {
             console.error("arrived push error:", e.message);
@@ -735,15 +755,9 @@ const init = async (io) => {
               ioInstance.to(driverSocketId).emit("request:new", payload);
             }
 
-            // نرسل إشعار دائماً حتى لو السائق متصل، حتى يعرف إن الطلب من وصلني
-            const title = priorityMatch
-              ? `وصلني - ${previousGoodDriverMessage.title}`
-              : "وصلني - طلب رحلة جديد";
-            const message = priorityMatch
-              ? previousGoodDriverMessage.message
-              : "لديك طلب رحلة جديد قريب منك. افتح التطبيق للقبول.";
+            // نرسل إشعار دائماً، والتطبيق يخفيه إذا جان مفتوح (حتى ما تتداخل النغمتين)
             notifications
-              .sendNotificationToUser(did, message, title)
+              .sendRideRequestNotification(did, newReq.id, priorityMatch ? previousGoodDriverMessage : null)
               .catch((e) => console.error("driver request push error:", e.message));
 
             sentCount++;

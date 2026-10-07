@@ -246,29 +246,18 @@ router.post("/ride-requests", authenticateToken, async (req, res) => {
           }
         : { request: newReq };
 
-      const deliveredBySocket = await socketService
+      await socketService
         .notifyDriverSocket(did, "request:new", payload)
         .catch(() => false);
 
-      if (!deliveredBySocket) {
-        const title = priorityMatch ? previousGoodDriverMessage.title : "طلب رحلة جديد";
-        const message = priorityMatch
-          ? previousGoodDriverMessage.message
-          : "لديك طلب رحلة جديد قريب منك. افتح التطبيق للقبول.";
-        notifications
-          .sendNotificationToUser(did, message, title)
-          .catch((e) => console.error("offline driver request push error:", e.message));
-      }
+      // نفس سلوك طريق الـ socket: إشعار واحد دائماً بنغمة الطلب
+      notifications
+        .sendRideRequestNotification(did, newReq.id, priorityMatch ? previousGoodDriverMessage : null)
+        .catch((e) => console.error("driver request push error:", e.message));
 
       await redisClient.sAdd(sentKey, String(did));
       await rememberPendingRequestForDriver(did, newReq.id, redisClient);
       sentCount++;
-
-      if (priorityMatch) {
-        notifications
-          .sendNotificationToUser(did, previousGoodDriverMessage.message, previousGoodDriverMessage.title)
-          .catch((e) => console.error("previous good driver push error:", e.message));
-      }
     }
     await redisClient.expire(sentKey, 3600);
 

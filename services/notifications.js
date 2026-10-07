@@ -2,7 +2,14 @@ const { User, UserDevice } = require("../models");
 const NotificationLog = require("../models/notification_log");
 const axios = require("axios");
 
-const sendNotificationToDevices = async (playerIds, message, title = "Notification") => {
+// إعدادات الصوت لإشعار طلب الرحلة (نغمة alirt_driver)
+const RIDE_REQUEST_SOUND = {
+  existing_android_channel_id: "ride_requests",
+  android_sound: "alirt_driver",
+  ios_sound: "alirt_driver.wav",
+};
+
+const sendNotificationToDevices = async (playerIds, message, title = "Notification", extra = {}) => {
   const url = 'https://onesignal.com/api/v1/notifications';
   const headers = {
     'Authorization': `Basic ${process.env.ONESIGNAL_API_KEY}`,
@@ -13,6 +20,7 @@ const sendNotificationToDevices = async (playerIds, message, title = "Notificati
     include_player_ids: playerIds,
     contents: { en: message },
     headings: { en: title },
+    ...extra,
   };
 
   return axios.post(url, data, { headers });
@@ -82,7 +90,7 @@ const sendNotificationToRole = async (role, message, title = "Notification") => 
   }
 };
 
-const sendNotificationToUser = async (userId, message, title = "Notification") => {
+const sendNotificationToUser = async (userId, message, title = "Notification", extra = {}) => {
   const devices = await UserDevice.findAll({
     where: { user_id: userId }  
   });
@@ -106,7 +114,7 @@ const sendNotificationToUser = async (userId, message, title = "Notification") =
   }
 
   try {
-    await sendNotificationToDevices(playerIds, message, title);
+    await sendNotificationToDevices(playerIds, message, title, extra);
     logData.status = "sent";
     await NotificationLog.create(logData);
     return { success: true };
@@ -120,8 +128,30 @@ const sendNotificationToUser = async (userId, message, title = "Notification") =
 
 
 
+// إشعار طلب رحلة جديد للكابتن. نفس الدالة تستخدمها كل طرق إنشاء الطلب.
+// data.type يستخدمه التطبيق حتى يخفي الإشعار إذا جان مفتوح ويشغل نغمته الداخلية بدله
+const sendRideRequestNotification = (driverId, requestId, priority = null) => {
+  const title = priority ? `وصلني - ${priority.title}` : "زبون بالقرب منك! 📍";
+  const message = priority
+    ? priority.message
+    : "زبون متواجد بالقرب منك يحتاج إلى توصيلة الآن. اقبل الرحلة عبر وصلني ولا تفوت الفرصة";
+
+  return sendNotificationToUser(driverId, message, title, {
+    ...RIDE_REQUEST_SOUND,
+    data: { type: "ride_request", requestId: String(requestId) },
+    // نفس الطلب ما يطلع إشعارين
+    collapse_id: `ride_request_${requestId}`,
+    // الطلب يصير قديم بسرعة، فإذا التلفون جان مطفي ما نوصله بعد دقيقة
+    ttl: 60,
+    // أولوية عالية حتى يوصل فوراً حتى لو التلفون بوضع توفير الطاقة
+    priority: 10,
+  });
+};
+
 module.exports = {
   sendNotificationToAll,
   sendNotificationToRole,
-  sendNotificationToUser
+  sendNotificationToUser,
+  sendRideRequestNotification,
+  RIDE_REQUEST_SOUND,
 };
