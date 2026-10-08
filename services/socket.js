@@ -19,6 +19,48 @@ const {
 
 let ioInstance = null;
 
+// آخر موقع معروف للكابتن ({ lat, lng, heading, speed, ts }) أو null. ما يرمي خطأ أبداً.
+const getDriverLocation = async (driverId) => {
+  try {
+    const loc = await redisService.getJSON(`driver:loc:${driverId}`);
+    if (!loc || loc.lat == null || loc.lng == null) return null;
+    return {
+      lat: Number(loc.lat),
+      lng: Number(loc.lng),
+      heading: loc.heading ?? null,
+      speed: loc.speed ?? null,
+      ts: loc.ts ?? null,
+    };
+  } catch (e) {
+    return null;
+  }
+};
+
+const isRoomOnline = (room) => {
+  if (!ioInstance) return false;
+  const members = ioInstance.sockets.adapter.rooms.get(room);
+  return !!members && members.size > 0;
+};
+
+const ACTIVE_TRIP_STATUSES = ["accepted", "arrived", "started"];
+
+// مفتاح socket:<role>:<id> بعده ينستخدم بأماكن قديمة، فنخليه طويل (ينحذف بالـ disconnect)
+const SOCKET_KEY_TTL = 60 * 60 * 24;
+
+// الإرسال عن طريق rooms بدل socket id المخزن بـ Redis (اللي جان ينتهي وما يتحدث)
+const emitToRider = (riderId, event, payload) => {
+  const room = `rider:${riderId}`;
+  if (!isRoomOnline(room)) return false;
+  ioInstance.to(room).emit(event, payload);
+  return true;
+};
+
+const emitToDriver = (driverId, event, payload) => {
+  const room = `driver:${driverId}`;
+  if (!isRoomOnline(room)) return false;
+  ioInstance.to(room).emit(event, payload);
+  return true;
+};
 
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
@@ -67,8 +109,7 @@ const getPreviousGoodDriverRatings = async (riderId, driverIds) => {
 const deliverPendingRequestsToDriver = async (driverId, redisClient) => {
   if (!ioInstance) return;
 
-  const sid = await redisClient.get(`socket:driver:${driverId}`);
-  if (!sid) return;
+  if (!isRoomOnline(`driver:${driverId}`)) return;
 
   const requestIds = await redisClient
     .sMembers(pendingDriverRequestsKey(driverId))
@@ -96,7 +137,7 @@ const deliverPendingRequestsToDriver = async (driverId, redisClient) => {
       continue;
     }
 
-    ioInstance.to(sid).emit("request:new", { request: req });
+    emitToDriver(driverId, "request:new", { request: req });
   }
 };
 
@@ -125,29 +166,15 @@ const init = async (io) => {
 
       const isDriver = user.role === "driver";
       const socketKey = isDriver ? `socket:driver:${user.id}` : `socket:rider:${user.id}`;
-      // المفتاح ينحذف عند الـ disconnect، فالمدة الطويلة ما تترك بيانات قديمة.
-      // جانت ساعة وحدة، فبعد ساعة من الاتصال يختفي ويوكف وصول الأحداث للزبون/السائق
-      await redisClient.set(socketKey, socket.id, { EX: 60 * 60 * 24 });
-      // room ثابت للمستخدم حتى توصل الأحداث لكل اتصالاته الحالية
+      // room ثابت للمستخدم: كل الأحداث توصله عن طريقه، حتى لو عنده أكثر من اتصال
       socket.join(isDriver ? `driver:${user.id}` : `rider:${user.id}`);
-      if (isDriver) {
-        try {
-          const restored = await isDriverOnlineFresh(user.id, redisClient);
-          if (restored) {
-            await markDriverOnline(user.id, redisClient);
-            socket.emit("driver:online_restored", {
-              ok: true,
-              ttlSeconds: 30 * 60,
-            });
-            await deliverPendingRequestsToDriver(user.id, redisClient);
-          }
-        } catch (e) {
-          console.error("driver online restore error", e.message);
-        }
-      }
+
+      // ملاحظة مهمة: كل الـ handlers لازم تتسجل قبل أي await. أي رسالة يدزها
+      // التطبيق أول ما يتصل (موقع، طلب حالة) جانت تضيع لأن محد يستقبلها بعد.
+      // التهيئة اللي تحتاج Redis/داتابيس صارت بآخر هذا الـ handler.
         const refreshSocketKey = async () => {
           try {
-            await redisClient.set(socketKey, socket.id, { EX: 3600 });
+            await redisClient.set(socketKey, socket.id, { EX: SOCKET_KEY_TTL });
           } catch (e) {
             console.error("refreshSocketKey error", e.message);
           }
@@ -288,7 +315,8 @@ const init = async (io) => {
           const now = Date.now();
           const last = socket.data?.lastLocTs || 0;
 
-          if (now - last < 1000) {
+          // حماية من الإغراق بس؛ التطبيق يدز كل ~1.1 ثانية
+          if (now - last < 500) {
             return ack && ack({ ok: true, throttled: true });
           }
 
@@ -361,6 +389,34 @@ const init = async (io) => {
       });
 
 
+      // الزبون يطلب آخر موقع للكابتن مالته (أول ما ينقبل الطلب، أو يرجع
+      // للتطبيق، أو إذا تأخرت التحديثات). هذا يخلي الخريطة تصلّح نفسها.
+      socket.on("rider:get_driver_location", async (data, ack) => {
+        try {
+          if (isDriver) return ack && ack({ ok: false, reason: "not_rider" });
+          const where = { rider_id: user.id, status: { [Op.in]: ACTIVE_TRIP_STATUSES } };
+          if (data && data.requestId) where.id = data.requestId;
+          const req = await RideRequest.findOne({
+            where,
+            order: [["id", "DESC"]],
+            attributes: ["id", "driver_id", "status"],
+          });
+          if (!req || !req.driver_id) return ack && ack({ ok: true, found: false });
+
+          const loc = await getDriverLocation(req.driver_id);
+          return ack && ack({
+            ok: true,
+            found: !!loc,
+            requestId: req.id,
+            driverId: req.driver_id,
+            status: req.status,
+            ...(loc || {}),
+          });
+        } catch (e) {
+          return ack && ack({ ok: false, reason: e.message });
+        }
+      });
+
       // قبول طلب الرحلة من قبل السائق
       socket.on("driver:accept_request", async ({ requestId }) => {
         try {
@@ -388,9 +444,10 @@ const init = async (io) => {
           }
 
           // DB transaction
+          let req;
           const t = await sequelize.transaction();
           try {
-            const req = await RideRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+            req = await RideRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
             if (!req) {
               await t.rollback();
               await redisService.releaseLock(lockKey, String(user.id));
@@ -414,43 +471,64 @@ const init = async (io) => {
             req.driver_id = user.id;
             await req.save({ transaction: t });
             await t.commit();
-
-            await redisClient.set(`driver:busy:${user.id}`, String(req.id), { EX: 60 * 60 * 3 });
-            // notify rider
-            const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
-            const payload = { requestId: req.id, driverId: user.id };
-            if (riderSocketId && ioInstance) {
-              ioInstance.to(riderSocketId).emit("request:accepted", payload);
-            } else {
-              // offline -> send push
-              try { await notifications.sendNotificationToUser(req.rider_id, "تم قبول طلبك", "السائق في الطريق"); } catch (e) {}
-            }
-
-            try {
-              const sentDriverIds = await clearPendingRequestForDrivers(req.id, redisClient);
-              for (const did of sentDriverIds) {
-                if (String(did) === String(user.id)) continue;
-                const sid = await redisClient.get(`socket:driver:${did}`);
-                if (sid && ioInstance) {
-                  ioInstance.to(sid).emit("request:taken", {
-                    requestId: req.id,
-                    driverId: user.id,
-                    status: "accepted",
-                  });
-                }
-              }
-            } catch (notifyErr) {
-              console.error("notify request:taken error", notifyErr.message);
-            }
-
-            socket.emit("request:accepted", payload);
           } catch (e) {
-            await t.rollback();
+            try { await t.rollback(); } catch (_) {}
             await redisService.releaseLock(lockKey, String(user.id));
             socket.emit("request:accept_failed", { requestId, reason: "error", details: e.message });
+            return;
+          }
+
+          // ===== من هنا القبول ثابت بالداتابيس =====
+          // أي خطأ بعده لازم ما يوصل للكابتن كـ "فشل"، وإلا يسكّر الرحلة عنده
+          // ويوكف إرسال موقعه بينما الزبون ينتظره
+          try {
+            // busy قبل كلشي: هو اللي يخلي موقع الكابتن ينرسل للزبون
+            await redisClient.set(`driver:busy:${user.id}`, String(req.id), { EX: 60 * 60 * 3 });
+          } catch (e) {
+            console.error("accept: set busy error", e.message);
+          }
+
+          const driverLocation = await getDriverLocation(user.id);
+          const payload = { requestId: req.id, driverId: user.id, driverLocation };
+
+          // الكابتن أولاً حتى يبدي يرسل موقعه فوراً
+          socket.emit("request:accepted", payload);
+
+          try {
+            const riderRoom = `rider:${req.rider_id}`;
+            if (isRoomOnline(riderRoom)) {
+              ioInstance.to(riderRoom).emit("request:accepted", payload);
+              if (driverLocation) {
+                ioInstance.to(riderRoom).emit("trip:driver_location", {
+                  requestId: req.id,
+                  driverId: user.id,
+                  ...driverLocation,
+                });
+              }
+            } else {
+              await notifications.sendNotificationToUser(req.rider_id, "تم قبول طلبك", "السائق في الطريق");
+            }
+          } catch (e) {
+            console.error("accept: notify rider error", e.message);
+          }
+
+          try {
+            const sentDriverIds = await clearPendingRequestForDrivers(req.id, redisClient);
+            for (const did of sentDriverIds) {
+              if (String(did) === String(user.id)) continue;
+              ioInstance.to(`driver:${did}`).emit("request:taken", {
+                requestId: req.id,
+                driverId: user.id,
+                status: "accepted",
+              });
+            }
+          } catch (notifyErr) {
+            console.error("notify request:taken error", notifyErr.message);
           }
         } catch (e) {
           console.error("accept error", e.message);
+          // لازم نرد على الكابتن دائماً، وإلا يبقى ينتظر بدون ما يعرف النتيجة
+          socket.emit("request:accept_failed", { requestId, reason: "error", details: e.message });
         }
       });
 
@@ -462,10 +540,7 @@ const init = async (io) => {
           req.status = "arrived";
           await req.save();
           const payload = { requestId: req.id, status: req.status };
-          const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
-          if (riderSocketId && ioInstance) {
-            ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
-          }
+          emitToRider(req.rider_id, "trip:status_changed", payload);
           try {
             // التطبيق يخفي هذا الإشعار إذا جان مفتوح لأنه يشغل نغمة الوصول بنفسه
             await notifications.sendNotificationToUser(
@@ -491,9 +566,8 @@ const init = async (io) => {
           if (!req) return;
           req.status = "started";
           await req.save();
-          const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
           const payload = { requestId: req.id, status: req.status };
-          if (riderSocketId && ioInstance) ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
+          emitToRider(req.rider_id, "trip:status_changed", payload);
         } catch (e) { console.error(e.message); }
       });
 
@@ -512,17 +586,8 @@ const init = async (io) => {
           }
           await clearPendingRequestForDrivers(req.id, redisClient);
 
-          const riderSocketId = await redisClient.get(`socket:rider:${req.rider_id}`);
-          if (riderSocketId && ioInstance) {
-            ioInstance.to(riderSocketId).emit("trip:status_changed", payload);
-          }
-
-          const driverSocketId = req.driver_id
-            ? await redisClient.get(`socket:driver:${req.driver_id}`)
-            : null;
-          if (driverSocketId && ioInstance) {
-            ioInstance.to(driverSocketId).emit("trip:status_changed", payload);
-          }
+          emitToRider(req.rider_id, "trip:status_changed", payload);
+          if (req.driver_id) emitToDriver(req.driver_id, "trip:status_changed", payload);
 
           // --- Debt / commission handling (MySQL only) ---
           try {
@@ -564,7 +629,7 @@ const init = async (io) => {
                   });
 
                   try {
-                    const sid = await redisClient.get(`socket:driver:${driver.id}`);
+                    const sid = isRoomOnline(`driver:${driver.id}`) ? `driver:${driver.id}` : null;
                     const payload2 = {
                       debt: rewardResult.debt,
                       rewardBalance: rewardResult.rewardBalance,
@@ -750,10 +815,7 @@ const init = async (io) => {
                 }
               : { request: newReq };
 
-            const driverSocketId = await redisClient.get(`socket:driver:${did}`);
-            if (driverSocketId && ioInstance) {
-              ioInstance.to(driverSocketId).emit("request:new", payload);
-            }
+            emitToDriver(did, "request:new", payload);
 
             // نرسل إشعار دائماً، والتطبيق يخفيه إذا جان مفتوح (حتى ما تتداخل النغمتين)
             notifications
@@ -799,25 +861,19 @@ const init = async (io) => {
           if (req.driver_id) {
             await redisClient.del(`driver:busy:${req.driver_id}`);
 
-            const driverSid = await redisClient.get(`socket:driver:${req.driver_id}`);
-            if (driverSid && ioInstance) {
-              ioInstance.to(driverSid).emit("trip:status_changed", {
-                requestId: req.id,
-                status: "cancelled",
-              });
-            }
+            emitToDriver(req.driver_id, "trip:status_changed", {
+              requestId: req.id,
+              status: "cancelled",
+            });
           }
 
           const driverIds = await clearPendingRequestForDrivers(req.id, redisClient);
 
           for (const did of driverIds || []) {
-            const sid = await redisClient.get(`socket:driver:${did}`);
-            if (sid && ioInstance) {
-              ioInstance.to(sid).emit("trip:status_changed", {
-                requestId: req.id,
-                status: "cancelled",
-              });
-            }
+            emitToDriver(did, "trip:status_changed", {
+              requestId: req.id,
+              status: "cancelled",
+            });
           }
 
         } catch (e) {
@@ -825,28 +881,33 @@ const init = async (io) => {
         }
       });
 
+      // ===== التهيئة (بعد تسجيل كل الـ handlers) =====
+      await redisClient.set(socketKey, socket.id, { EX: SOCKET_KEY_TTL });
+      if (isDriver) {
+        try {
+          const restored = await isDriverOnlineFresh(user.id, redisClient);
+          if (restored) {
+            await markDriverOnline(user.id, redisClient);
+            socket.emit("driver:online_restored", {
+              ok: true,
+              ttlSeconds: 30 * 60,
+            });
+            await deliverPendingRequestsToDriver(user.id, redisClient);
+          }
+        } catch (e) {
+          console.error("driver online restore error", e.message);
+        }
+      }
     } catch (e) {
       console.error("socket connection error", e.message);
     }
   });
 };
 
-// إخبار السائق عبر السوكت
-const notifyDriverSocket = async (driverId, event, payload) => {
-  if (!ioInstance) return false;
-  const redisClient = redisService.client();
-  const sid = await redisClient.get(`socket:driver:${driverId}`);
-  if (sid) ioInstance.to(sid).emit(event, payload);
-  return !!sid;
-};
+// إخبار السائق عبر السوكت (يرجع true إذا جان متصل)
+const notifyDriverSocket = async (driverId, event, payload) => emitToDriver(driverId, event, payload);
 
-// إخبار الراكب عبر السوكت
-const notifyRiderSocket = async (riderId, event, payload) => {
-  if (!ioInstance) return false;
-  const redisClient = redisService.client();
-  const sid = await redisClient.get(`socket:rider:${riderId}`);
-  if (sid) ioInstance.to(sid).emit(event, payload);
-  return !!sid;
-};
+// إخبار الراكب عبر السوكت (يرجع true إذا جان متصل)
+const notifyRiderSocket = async (riderId, event, payload) => emitToRider(riderId, event, payload);
 
 module.exports = { init, notifyDriverSocket, notifyRiderSocket };

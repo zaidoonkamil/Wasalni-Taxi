@@ -6,7 +6,7 @@ const { Op } = require("sequelize");
 const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
-const { isDriverOnlineFresh } = require("../services/driverAvailability");
+const { isDriverOnlineFresh, clearPendingRequestForDrivers } = require("../services/driverAvailability");
 const { AREA_TYPES, SERVICE_TYPES, normalizeAreaType, normalizeServiceType, normalizeRouteZoneIds } = require("../services/areaPricing");
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
@@ -21,11 +21,12 @@ const parsePositiveNumber = (value) => {
 // Get current pricing (latest)
 router.get("/admin/pricing", requireAdmin, async (req, res) => {
   try {
-    const latest = await PricingSetting.findOne({ order: [["createdAt", "DESC"]] });
+    // نفس ترتيب حساب الأجرة (بالـ id) حتى الإدارة تشوف بالضبط السعر المستخدم
+    const latest = await PricingSetting.findOne({ order: [["id", "DESC"]] });
     const findLatest = (serviceType, areaType = "mixed") =>
       PricingSetting.findOne({
         where: { serviceType, areaType },
-        order: [["createdAt", "DESC"]],
+        order: [["id", "DESC"]],
       });
 
     const matrix = {};
@@ -374,6 +375,22 @@ router.post("/admin/ride-requests/:id/assign-driver", requireAdmin, async (req, 
     ride.status = "accepted";
     await ride.save({ transaction: t });
     await t.commit();
+
+    // نفس اللي يصير بقبول الكابتن: نعلّم الكابتن مشغول، ونشيل الطلب من
+    // باقي الكباتن حتى محد غيره يحاول يقبله
+    try {
+      const redisClient = redisService.client();
+      await redisClient.set(`driver:busy:${driverId}`, String(ride.id), { EX: 60 * 60 * 3 });
+      const sentDriverIds = await clearPendingRequestForDrivers(ride.id, redisClient);
+      for (const did of sentDriverIds) {
+        if (String(did) === String(driverId)) continue;
+        await socketService.notifyDriverSocket(did, "request:taken", {
+          requestId: ride.id,
+          driverId,
+          status: "accepted",
+        });
+      }
+    } catch (e) { console.error("assign-driver realtime cleanup", e.message); }
 
     // notify rider and driver
     try {

@@ -212,9 +212,11 @@ async function findPricingSetting(serviceType, areaType, transaction) {
   }
 
   for (const where of candidates) {
+    // الترتيب بالـ id (ترتيب الحفظ الحقيقي) مو بـ createdAt: الأخير محفوظ
+    // لحد الثانية بس، فإذا انحفظ سعرين بنفس الثانية جان ممكن يرجع القديم
     const pricing = await PricingSetting.findOne({
       where,
-      order: [["createdAt", "DESC"]],
+      order: [["id", "DESC"]],
       ...options,
     });
     if (pricing) return pricing;
