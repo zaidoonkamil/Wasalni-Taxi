@@ -7,7 +7,8 @@ const redisService = require("../services/redis");
 const socketService = require("../services/socket");
 const notifications = require("../services/notifications");
 const { isDriverOnlineFresh, clearPendingRequestForDrivers } = require("../services/driverAvailability");
-const { AREA_TYPES, SERVICE_TYPES, normalizeAreaType, normalizeServiceType, normalizeRouteZoneIds } = require("../services/areaPricing");
+const { AREA_TYPES, SERVICE_TYPES, DEFAULT_PRICING, normalizeAreaType, normalizeServiceType, normalizeRouteZoneIds, calculateFare } = require("../services/areaPricing");
+const { resolveRouteMetrics } = require("../services/routeMetrics");
 
 const driverCanReceiveService = (driverCategory, serviceType) => {
   return true;
@@ -86,6 +87,77 @@ router.put("/admin/pricing", requireAdmin, async (req, res) => {
   } catch (e) { console.error(e.message); res.status(500).json({ error: e.message }); }
 });
 
+// أداة تجربة السعر: الأدمن يحدد نقطتين ويشوف بالضبط شنو راح يحسب السيرفر
+// (نفس الدالة اللي تحسب أجرة الطلب الحقيقي) وأي قاعدة انطبقت وليش
+router.post("/admin/pricing/preview", requireAdmin, async (req, res) => {
+  try {
+    const { pickup, dropoff } = req.body;
+    if (!pickup || !dropoff) return res.status(400).json({ error: "pickup and dropoff required" });
+
+    const metrics = await resolveRouteMetrics(pickup, dropoff);
+    const zoneName = (z) => (z ? z.name || `نطاق ${z.id}` : null);
+
+    const forService = async (serviceType) => {
+      const fare = await calculateFare({
+        pickup,
+        dropoff,
+        distanceKm: metrics.distanceKm,
+        durationMin: metrics.durationMin,
+        serviceType,
+      });
+      const generalPerKm = Number.isFinite(parseFloat(fare.pricing?.pricePerKm))
+        ? parseFloat(fare.pricing.pricePerKm)
+        : DEFAULT_PRICING.pricePerKm;
+      const perKm = fare.pricingRoute?.pricePerKm ?? generalPerKm;
+      const rawFare = Number(metrics.distanceKm || 0) * perKm;
+      return {
+        estimatedFare: fare.estimatedFare,
+        pricingSource: fare.pricingSource,
+        pricePerKm: perKm,
+        fareBeforeRounding: Math.round(rawFare),
+        _fare: fare,
+      };
+    };
+
+    const ordinary = await forService("ordinary");
+    const superResult = await forService("super");
+    const f = ordinary._fare;
+    const pickupZones = f.matchedPickupZones || [];
+    const dropoffZones = f.matchedDropoffZones || [];
+    const sameZone = pickupZones.find((p) => dropoffZones.some((d) => Number(d.id) === Number(p.id)));
+
+    let rule;
+    if (ordinary.pricingSource === "zone_route") {
+      rule = `قاعدة 3: الانطلاق من ${zoneName(f.pickupZone)} والوصول إلى ${zoneName(f.dropoffZone)}، وبيناتهم ربط مفعّل، فيستخدم سعر الربط.`;
+    } else if (!pickupZones.length && !dropoffZones.length) {
+      rule = "قاعدة 1: لا الانطلاق ولا الوصول داخل أي زون، فيستخدم السعر العام.";
+    } else if (!pickupZones.length || !dropoffZones.length) {
+      const inside = pickupZones.length ? `الانطلاق داخل ${zoneName(pickupZones[0])}` : `الوصول داخل ${zoneName(dropoffZones[0])}`;
+      rule = `قاعدة 2: ${inside} والطرف الثاني خارج كل الزونات، فيستخدم السعر العام.`;
+    } else if (sameZone && pickupZones.length === 1 && dropoffZones.length === 1) {
+      rule = `الانطلاق والوصول داخل نفس الزون (${zoneName(sameZone)})، فيستخدم السعر العام.`;
+    } else {
+      rule = `الانطلاق داخل ${pickupZones.map(zoneName).join("، ")} والوصول داخل ${dropoffZones.map(zoneName).join("، ")}، بس ماكو ربط مفعّل بيناتهم، فيستخدم السعر العام.`;
+    }
+
+    const clean = ({ _fare, ...rest }) => rest;
+    res.json({
+      success: true,
+      distanceKm: metrics.distanceKm,
+      durationMin: metrics.durationMin,
+      distanceSource: metrics.source,
+      matchedPickupZones: pickupZones,
+      matchedDropoffZones: dropoffZones,
+      rule,
+      ordinary: clean(ordinary),
+      super: clean(superResult),
+    });
+  } catch (e) {
+    console.error("pricing preview error", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get("/admin/area-zones", requireAdmin, async (req, res) => {
   try {
     const zones = await AreaPricingZone.findAll({ order: [["createdAt", "DESC"]] });
@@ -101,6 +173,8 @@ router.post("/admin/area-zones", requireAdmin, async (req, res) => {
     const lat = Number(req.body.centerLat);
     const lng = Number(req.body.centerLng);
     const radius = parseInt(req.body.radiusMeters, 10);
+    // سعر الزون نفسه ما يدخل بحساب الأجرة (التسعير بالربط بين زونين أو العام)،
+    // فصار اختياري. ينحفظ بس إذا انرسل حتى ما نكسر نسخ تطبيق قديمة
     const ordinaryPricePerKm = parsePositiveNumber(req.body.ordinaryPricePerKm);
     const superPricePerKm = parsePositiveNumber(req.body.superPricePerKm);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
@@ -108,9 +182,6 @@ router.post("/admin/area-zones", requireAdmin, async (req, res) => {
     }
     if (!Number.isFinite(radius) || radius < 100) {
       return res.status(400).json({ error: "radiusMeters must be 100 or more" });
-    }
-    if (ordinaryPricePerKm == null || superPricePerKm == null) {
-      return res.status(400).json({ error: "ordinaryPricePerKm and superPricePerKm are required" });
     }
 
     const zone = await AreaPricingZone.create({
