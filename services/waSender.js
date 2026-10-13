@@ -104,22 +104,11 @@ function scheduleReconnect(reason = "unknown") {
 }
 
 function normalizeWhatsAppPhone(phone = "") {
-  let value = String(phone).trim();
-
+  const { normalizePhone } = require("./phoneUtils");
+  const value = normalizePhone(phone);
   if (!value) {
-    throw new Error("Phone number is required");
-  }
-
-  value = value.replace(/[^\d+]/g, "");
-
-  if (value.startsWith("+")) value = value.slice(1);
-  if (value.startsWith("00")) value = value.slice(2);
-  if (value.startsWith("0")) value = `964${value.slice(1)}`;
-
-  if (!/^\d{8,15}$/.test(value)) {
     throw new Error("Phone number format is invalid");
   }
-
   return value;
 }
 

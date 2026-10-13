@@ -1,25 +1,12 @@
 const axios = require("axios");
+const { normalizePhone } = require("./phoneUtils");
 
 const OTPIQ_BASE_URL = (process.env.OTPIQ_BASE_URL || "https://api.otpiq.com/api").replace(/\/+$/, "");
 const OTPIQ_PROVIDER = "whatsapp";
 const OTPIQ_TIMEOUT_MS = Number(process.env.OTPIQ_TIMEOUT_MS || 15000);
 
 function normalizeOtpiqPhone(phone = "") {
-  const digits = String(phone).replace(/\D/g, "");
-
-  if (digits.startsWith("964") && digits.length >= 12) {
-    return digits;
-  }
-
-  if (digits.startsWith("0") && digits.length >= 10) {
-    return `964${digits.slice(1)}`;
-  }
-
-  if (digits.length === 10 && digits.startsWith("7")) {
-    return `964${digits}`;
-  }
-
-  return digits;
+  return normalizePhone(phone);
 }
 
 function optionalPayloadFields() {

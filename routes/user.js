@@ -17,6 +17,15 @@ const {
   verifyOtp: verifyOtpService,
 } = require("../services/otpService");
 const { sendOtpiqVerificationCode } = require("../services/otpiqService");
+const {
+  normalizePhone,
+  phoneVariants,
+} = require("../services/phoneUtils");
+
+const phoneLookupWhere = (phone, extra = {}) => ({
+  ...extra,
+  phone: { [Op.in]: phoneVariants(phone) },
+});
 
 async function sendOtpForPurpose(phone, purpose) {
   const otp = await createOtp(phone, purpose);
@@ -33,7 +42,7 @@ router.post("/forgot-password", upload.none(), async (req, res, next) => {
       return res.status(400).json({ error: "phone مطلوب" });
     }
 
-    const user = await User.findOne({ where: { phone } });
+    const user = await User.findOne({ where: phoneLookupWhere(phone) });
     if (!user) {
       return res.status(404).json({ error: "المستخدم غير موجود" });
     }
@@ -72,7 +81,7 @@ router.post("/reset-password", upload.none(), async (req, res, next) => {
 
     await verifyOtpService(phone, code, OTP_PURPOSES.passwordReset);
 
-    const user = await User.findOne({ where: { phone } });
+    const user = await User.findOne({ where: phoneLookupWhere(phone) });
     if (!user) {
       return res.status(404).json({ error: "المستخدم غير موجود" });
     }
@@ -108,7 +117,9 @@ router.post("/verify-otp", upload.none(), async (req, res, next) => {
 
     await verifyOtpService(phone, code, OTP_PURPOSES.verifyAccount);
 
-    const user = await User.findOne({ where: { phone, role: "user" } });
+    const user = await User.findOne({
+      where: phoneLookupWhere(phone, { role: "user" }),
+    });
     if (!user) {
       return res.status(404).json({ error: "المستخدم غير موجود" });
     }
@@ -137,7 +148,9 @@ router.post("/resend-otp", upload.none(), async (req, res, next) => {
       return res.status(400).json({ error: "phone مطلوب" });
     }
 
-    const user = await User.findOne({ where: { phone, role: "user" } });
+    const user = await User.findOne({
+      where: phoneLookupWhere(phone, { role: "user" }),
+    });
     if (!user) {
       return res.status(404).json({ error: "المستخدم غير موجود" });
     }
@@ -171,7 +184,7 @@ router.post("/forgot-password", upload.none(), async (req, res) => {
 
     if (!phone) return res.status(400).json({ error: "phone مطلوب" });
 
-    const user = await User.findOne({ where: { phone } });
+    const user = await User.findOne({ where: phoneLookupWhere(phone) });
     if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
 
     if (user.status === "blocked") {
@@ -271,7 +284,7 @@ router.post("/reset-password", upload.none(), async (req, res) => {
     otpRow.consumedAt = new Date();
     await otpRow.save();
 
-    const user = await User.findOne({ where: { phone } });
+    const user = await User.findOne({ where: phoneLookupWhere(phone) });
     if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
 
     if (user.status === "blocked") {
@@ -334,7 +347,9 @@ router.post("/verify-otp", upload.none(), async (req, res) => {
     otpRow.consumedAt = new Date();
     await otpRow.save();
 
-    const user = await User.findOne({ where: { phone, role: "user" } });
+    const user = await User.findOne({
+      where: phoneLookupWhere(phone, { role: "user" }),
+    });
     if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
 
     user.status = "active";
@@ -360,7 +375,9 @@ router.post("/resend-otp", async (req, res) => {
 
     if (!phone) return res.status(400).json({ error: "phone مطلوب" });
 
-    const user = await User.findOne({ where: { phone, role: "user" } });
+    const user = await User.findOne({
+      where: phoneLookupWhere(phone, { role: "user" }),
+    });
     if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
 
     if (user.status === "active") {
@@ -411,12 +428,6 @@ router.post("/resend-otp", async (req, res) => {
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
-const normalizePhone = (phone = "") => {
-  phone = String(phone).trim();
-  if (phone.startsWith("0")) return "964" + phone.slice(1);
-  return phone;
-};
 
 const generateToken = (user) => {
   return jwt.sign(
@@ -530,7 +541,9 @@ router.post("/users", upload.none(), async (req, res) => {
       return res.status(400).json({ error: "status غير صحيح" });
     }
 
-    const existingPhone = await User.findOne({ where: { phone } });
+    const existingPhone = await User.findOne({
+      where: phoneLookupWhere(phone),
+    });
     if (existingPhone) {
       return res.status(400).json({ error: "تم استخدام رقم الهاتف من مستخدم اخر" });
     }
@@ -628,7 +641,9 @@ router.post("/drivers/register",
         });
       }
 
-      const existingPhone = await User.findOne({ where: { phone } });
+      const existingPhone = await User.findOne({
+        where: phoneLookupWhere(phone),
+      });
       if (existingPhone) {
         return res.status(400).json({ error: "تم استخدام رقم الهاتف من مستخدم اخر" });
       }
@@ -734,7 +749,9 @@ router.post("/admin/drivers",
         });
       }
 
-      const existingPhone = await User.findOne({ where: { phone } });
+      const existingPhone = await User.findOne({
+        where: phoneLookupWhere(phone),
+      });
       if (existingPhone) {
         return res.status(400).json({ error: "تم استخدام رقم الهاتف من مستخدم اخر" });
       }
@@ -780,7 +797,7 @@ router.post("/login", upload.none(), async (req, res) => {
       return res.status(400).json({ error: "يرجى إدخال رقم الهاتف وكلمة المرور" });
     }
 
-    const user = await User.findOne({ where: { phone } });
+    const user = await User.findOne({ where: phoneLookupWhere(phone) });
     if (!user) {
       return res.status(400).json({ error: "يرجى إدخال رقم الهاتف بشكل صحيح" });
     }
@@ -990,15 +1007,14 @@ router.post("/profile/phone-change/send-otp", requireAuth, upload.none(), async 
       return res.status(400).json({ error: "رقم الهاتف مطلوب" });
     }
 
-    if (phone === req.user.phone) {
+    if (phone === normalizePhone(req.user.phone)) {
       return res.status(400).json({ error: "هذا هو رقمك الحالي" });
     }
 
     const existingPhone = await User.findOne({
-      where: {
-        phone,
+      where: phoneLookupWhere(phone, {
         id: { [Op.ne]: req.user.id },
-      },
+      }),
     });
 
     if (existingPhone) {
@@ -1028,17 +1044,16 @@ router.patch("/profile", requireAuth, uploadImage.single("driverImage"), async (
     }
 
     const existingPhone = await User.findOne({
-      where: {
-        phone,
+      where: phoneLookupWhere(phone, {
         id: { [Op.ne]: req.user.id },
-      },
+      }),
     });
 
     if (existingPhone) {
       return res.status(400).json({ error: "رقم الهاتف مستخدم من حساب آخر" });
     }
 
-    if (phone !== req.user.phone) {
+    if (phone !== normalizePhone(req.user.phone)) {
       const otpCode = String(req.body.otpCode || "").trim();
       if (!otpCode) {
         return res.status(400).json({ error: "رمز التحقق مطلوب لتغيير رقم الهاتف" });
@@ -1082,10 +1097,9 @@ router.patch("/admin/users/:id", requireAdmin, upload.none(), async (req, res) =
       const phone = normalizePhone(req.body.phone);
       if (!phone) return res.status(400).json({ error: "رقم الهاتف مطلوب" });
       const existingPhone = await User.findOne({
-        where: {
-          phone,
+        where: phoneLookupWhere(phone, {
           id: { [Op.ne]: target.id },
-        },
+        }),
       });
       if (existingPhone) {
         return res.status(400).json({ error: "رقم الهاتف مستخدم من حساب آخر" });

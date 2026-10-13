@@ -124,7 +124,11 @@ router.post("/admin/pricing/preview", requireAdmin, async (req, res) => {
     const f = ordinary._fare;
     const pickupZones = f.matchedPickupZones || [];
     const dropoffZones = f.matchedDropoffZones || [];
-    const sameZone = pickupZones.find((p) => dropoffZones.some((d) => Number(d.id) === Number(p.id)));
+    // نفس قاعدة الحساب: أصغر زون للانطلاق هو نفسه أصغر زون للوصول
+    const sameZone =
+      pickupZones[0] && dropoffZones[0] && Number(pickupZones[0].id) === Number(dropoffZones[0].id)
+        ? pickupZones[0]
+        : null;
 
     let rule;
     if (ordinary.pricingSource === "zone_route") {
@@ -134,7 +138,7 @@ router.post("/admin/pricing/preview", requireAdmin, async (req, res) => {
     } else if (!pickupZones.length || !dropoffZones.length) {
       const inside = pickupZones.length ? `الانطلاق داخل ${zoneName(pickupZones[0])}` : `الوصول داخل ${zoneName(dropoffZones[0])}`;
       rule = `قاعدة 2: ${inside} والطرف الثاني خارج كل الزونات، فيستخدم السعر العام.`;
-    } else if (sameZone && pickupZones.length === 1 && dropoffZones.length === 1) {
+    } else if (sameZone) {
       rule = `الانطلاق والوصول داخل نفس الزون (${zoneName(sameZone)})، فيستخدم السعر العام.`;
     } else {
       rule = `الانطلاق داخل ${pickupZones.map(zoneName).join("، ")} والوصول داخل ${dropoffZones.map(zoneName).join("، ")}، بس ماكو ربط مفعّل بيناتهم، فيستخدم السعر العام.`;

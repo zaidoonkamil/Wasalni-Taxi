@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const { Op } = require("sequelize");
 const { OtpCode, PasswordResetOtp } = require("../models");
+const { normalizePhone, toLatinDigits } = require("./phoneUtils");
 
 const OTP_TTL_MS = Number(process.env.OTP_TTL_MS || 5 * 60 * 1000);
 const OTP_RESEND_MS = Number(process.env.OTP_RESEND_MS || 60 * 1000);
@@ -16,25 +17,10 @@ function generateOtpCode() {
 }
 
 function hashOtp(code) {
-  return crypto.createHash("sha256").update(String(code)).digest("hex");
-}
-
-function normalizePhone(phone = "") {
-  const raw = String(phone).trim();
-
-  if (raw.startsWith("964") && raw.length === 13) {
-    return raw;
-  }
-
-  if (raw.startsWith("0") && raw.length === 11) {
-    return `964${raw.slice(1)}`;
-  }
-
-  if (raw.length === 10) {
-    return `964${raw}`;
-  }
-
-  return raw;
+  return crypto
+    .createHash("sha256")
+    .update(toLatinDigits(String(code)).trim())
+    .digest("hex");
 }
 
 function resolveStore(purpose) {

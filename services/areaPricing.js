@@ -234,20 +234,17 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
     commonZones,
   } =
     await resolveTripPricingZones(pickup, dropoff, transaction);
-  const commonZoneIds = new Set(
-    (commonZones || []).map((zone) => Number(zone.id))
-  );
-  const pickupRouteZones = (pickupZones || []).filter(
-    (zone) => !commonZoneIds.has(Number(zone.id))
-  );
-  const dropoffRouteZones = (dropoffZones || []).filter(
-    (zone) => !commonZoneIds.has(Number(zone.id))
-  );
-  const routeMatch = await findBestZoneRoutePrice(
-    pickupRouteZones,
-    dropoffRouteZones,
-    transaction
-  );
+  // الرحلة داخل نفس الزون = السعر العام. "نفس الزون" يعني أصغر زون يحتوي
+  // الانطلاق هو نفسه أصغر زون يحتوي الوصول.
+  // قبل جان يشيل أي زون مشترك بين النقطتين، فالربط بين زون جديد وزون أكبر
+  // يحتويه (مثلاً حي داخل مدينة) ما جان يتطبق أبداً.
+  const pickupBest = (pickupZones || [])[0];
+  const dropoffBest = (dropoffZones || [])[0];
+  const sameSmallestZone =
+    pickupBest && dropoffBest && Number(pickupBest.id) === Number(dropoffBest.id);
+  const routeMatch = sameSmallestZone
+    ? { routePrice: null, pickupZone: null, dropoffZone: null }
+    : await findBestZoneRoutePrice(pickupZones, dropoffZones, transaction);
   const routePrice = routeMatch.routePrice;
   const areaType = "mixed";
   const pricing = await findPricingSetting(normalizedService, areaType, transaction);
