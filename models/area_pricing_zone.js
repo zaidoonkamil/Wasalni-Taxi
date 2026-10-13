@@ -15,6 +15,12 @@ const AreaPricingZone = sequelize.define(
     radiusMeters: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1000 },
     ordinaryPricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
     superPricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
+    // تسعيرة الرحلة اللي تبدي وتخلص داخل هذا الزون. حقول منفصلة عن
+    // ordinary/superPricePerKm القديمة (بيها أسعار منسية) وتبدي مطفية.
+    intraEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    intraOrdinaryPricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
+    intraSuperPricePerKm: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
+    intraMinimumFare: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
     active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   },
   {

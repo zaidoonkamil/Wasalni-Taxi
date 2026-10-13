@@ -108,7 +108,7 @@ router.post("/admin/pricing/preview", requireAdmin, async (req, res) => {
       const generalPerKm = Number.isFinite(parseFloat(fare.pricing?.pricePerKm))
         ? parseFloat(fare.pricing.pricePerKm)
         : DEFAULT_PRICING.pricePerKm;
-      const perKm = fare.pricingRoute?.pricePerKm ?? generalPerKm;
+      const perKm = fare.pricingRoute?.pricePerKm ?? fare.pricingZone?.pricePerKm ?? generalPerKm;
       const rawFare = Number(metrics.distanceKm || 0) * perKm;
       return {
         estimatedFare: fare.estimatedFare,
@@ -133,13 +133,17 @@ router.post("/admin/pricing/preview", requireAdmin, async (req, res) => {
     let rule;
     if (ordinary.pricingSource === "zone_route") {
       rule = `قاعدة 3: الانطلاق من ${zoneName(f.pickupZone)} والوصول إلى ${zoneName(f.dropoffZone)}، وبيناتهم ربط مفعّل، فيستخدم سعر الربط.`;
+    } else if (ordinary.pricingSource === "zone_internal") {
+      const z = f.pricingZone;
+      const min = z.minimumFare ? ` (حد أدنى ${z.minimumFare} د.ع)` : "";
+      rule = `داخل الزون: الانطلاق والوصول داخل ${zoneName(z)}، وماكو ربط يخصهم، فيستخدم تسعيرة ${zoneName(z)} الداخلية${min}.`;
     } else if (!pickupZones.length && !dropoffZones.length) {
       rule = "قاعدة 1: لا الانطلاق ولا الوصول داخل أي زون، فيستخدم السعر العام.";
     } else if (!pickupZones.length || !dropoffZones.length) {
       const inside = pickupZones.length ? `الانطلاق داخل ${zoneName(pickupZones[0])}` : `الوصول داخل ${zoneName(dropoffZones[0])}`;
       rule = `قاعدة 2: ${inside} والطرف الثاني خارج كل الزونات، فيستخدم السعر العام.`;
     } else if (sameZone) {
-      rule = `الانطلاق والوصول داخل نفس الزون (${zoneName(sameZone)})، فيستخدم السعر العام.`;
+      rule = `الانطلاق والوصول داخل نفس الزون (${zoneName(sameZone)})، بس تسعيرته الداخلية مطفية، فيستخدم السعر العام.`;
     } else {
       rule = `الانطلاق داخل ${pickupZones.map(zoneName).join("، ")} والوصول داخل ${dropoffZones.map(zoneName).join("، ")}، بس ماكو ربط مفعّل بيناتهم، فيستخدم السعر العام.`;
     }
@@ -161,6 +165,35 @@ router.post("/admin/pricing/preview", requireAdmin, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// حقول تسعيرة داخل الزون. تنطبق بس الحقول المرسلة (حتى نسخ الإدارة القديمة
+// ما تطفيها بالغلط). يرجع رسالة خطأ أو null.
+const applyIntraFields = (zone, body) => {
+  const emptyToNull = (v) => (v === "" || v === null ? null : v);
+  if (body.intraEnabled !== undefined) {
+    zone.intraEnabled = body.intraEnabled === true || body.intraEnabled === "true" || body.intraEnabled === 1;
+  }
+  if (body.intraOrdinaryPricePerKm !== undefined) {
+    const v = emptyToNull(body.intraOrdinaryPricePerKm);
+    zone.intraOrdinaryPricePerKm = v == null ? null : parsePositiveNumber(v);
+    if (v != null && zone.intraOrdinaryPricePerKm == null) return "intraOrdinaryPricePerKm must be greater than zero";
+  }
+  if (body.intraSuperPricePerKm !== undefined) {
+    const v = emptyToNull(body.intraSuperPricePerKm);
+    zone.intraSuperPricePerKm = v == null ? null : parsePositiveNumber(v);
+    if (v != null && zone.intraSuperPricePerKm == null) return "intraSuperPricePerKm must be greater than zero";
+  }
+  if (body.intraMinimumFare !== undefined) {
+    const v = emptyToNull(body.intraMinimumFare);
+    const n = v == null ? null : Number(v);
+    if (n != null && (!Number.isFinite(n) || n < 0)) return "intraMinimumFare must be zero or more";
+    zone.intraMinimumFare = n;
+  }
+  if (zone.intraEnabled && (parsePositiveNumber(zone.intraOrdinaryPricePerKm) == null || parsePositiveNumber(zone.intraSuperPricePerKm) == null)) {
+    return "intra prices (ordinary and super) are required when intraEnabled";
+  }
+  return null;
+};
 
 router.get("/admin/area-zones", requireAdmin, async (req, res) => {
   try {
@@ -188,7 +221,7 @@ router.post("/admin/area-zones", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "radiusMeters must be 100 or more" });
     }
 
-    const zone = await AreaPricingZone.create({
+    const zone = AreaPricingZone.build({
       name: req.body.name || null,
       type: "rich",
       centerLat: lat,
@@ -196,8 +229,12 @@ router.post("/admin/area-zones", requireAdmin, async (req, res) => {
       radiusMeters: radius,
       ordinaryPricePerKm,
       superPricePerKm,
+      intraEnabled: false,
       active: req.body.active == null ? true : !!req.body.active,
     });
+    const intraError = applyIntraFields(zone, req.body);
+    if (intraError) return res.status(400).json({ error: intraError });
+    await zone.save();
     res.json({ success: true, zone });
   } catch (e) {
     console.error(e.message);
@@ -225,6 +262,8 @@ router.put("/admin/area-zones/:id", requireAdmin, async (req, res) => {
       zone.superPricePerKm = value;
     }
     if (req.body.active !== undefined) zone.active = !!req.body.active;
+    const intraError = applyIntraFields(zone, req.body);
+    if (intraError) return res.status(400).json({ error: intraError });
 
     if (!Number.isFinite(Number(zone.centerLat)) || !Number.isFinite(Number(zone.centerLng))) {
       return res.status(400).json({ error: "invalid center" });

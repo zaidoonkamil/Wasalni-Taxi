@@ -68,6 +68,28 @@ const ensureSchema = async () => {
     allowNull: true,
   });
 
+  // تسعيرة داخل الزون: تبدي مطفية لكل الزونات الموجودة
+  await addColumnIfMissing("area_pricing_zones", "intraEnabled", {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  });
+
+  await addColumnIfMissing("area_pricing_zones", "intraOrdinaryPricePerKm", {
+    type: DataTypes.DECIMAL(10, 3),
+    allowNull: true,
+  });
+
+  await addColumnIfMissing("area_pricing_zones", "intraSuperPricePerKm", {
+    type: DataTypes.DECIMAL(10, 3),
+    allowNull: true,
+  });
+
+  await addColumnIfMissing("area_pricing_zones", "intraMinimumFare", {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+  });
+
   await addColumnIfMissing("advertisements", "targetAudience", {
     type: DataTypes.ENUM("user", "driver"),
     allowNull: false,

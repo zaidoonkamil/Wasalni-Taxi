@@ -82,6 +82,10 @@ async function resolveTripPricingZones(pickup, dropoff, transaction) {
       "radiusMeters",
       "ordinaryPricePerKm",
       "superPricePerKm",
+      "intraEnabled",
+      "intraOrdinaryPricePerKm",
+      "intraSuperPricePerKm",
+      "intraMinimumFare",
     ],
     ...(transaction ? { transaction } : {}),
     raw: true,
@@ -124,6 +128,31 @@ function zonePricePerKm(zone, serviceType) {
       : zone.ordinaryPricePerKm;
   const parsed = parseFloat(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// سعر الكيلو للرحلة داخل الزون، أو null إذا التسعيرة الداخلية مطفية/ناقصة
+function intraPricePerKm(zone, serviceType) {
+  if (!zone) return null;
+  const enabled = zone.intraEnabled === true || zone.intraEnabled === 1 || zone.intraEnabled === "1";
+  if (!enabled) return null;
+  const value =
+    normalizeServiceType(serviceType) === "super"
+      ? zone.intraSuperPricePerKm ?? zone.intraOrdinaryPricePerKm
+      : zone.intraOrdinaryPricePerKm;
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// أصغر زون يحتوي الانطلاق والوصول سوية وإله تسعيرة داخلية مفعّلة
+function findIntraZone(pickupZones, dropoffZones, serviceType) {
+  const dropoffIds = new Set((dropoffZones || []).map((zone) => Number(zone.id)));
+  // pickupZones مرتبة من الأصغر للأكبر
+  for (const zone of pickupZones || []) {
+    if (!dropoffIds.has(Number(zone.id))) continue;
+    const perKm = intraPricePerKm(zone, serviceType);
+    if (perKm != null) return { zone, perKm };
+  }
+  return null;
 }
 
 function routePricePerKm(routePrice, serviceType) {
@@ -234,10 +263,11 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
     commonZones,
   } =
     await resolveTripPricingZones(pickup, dropoff, transaction);
-  // الرحلة داخل نفس الزون = السعر العام. "نفس الزون" يعني أصغر زون يحتوي
-  // الانطلاق هو نفسه أصغر زون يحتوي الوصول.
-  // قبل جان يشيل أي زون مشترك بين النقطتين، فالربط بين زون جديد وزون أكبر
-  // يحتويه (مثلاً حي داخل مدينة) ما جان يتطبق أبداً.
+  // ترتيب القواعد:
+  // 1) ربط بين زون الانطلاق وزون الوصول (إذا مو نفس أصغر زون).
+  //    "نفس الزون" = أصغر زون يحتوي الانطلاق هو نفسه أصغر زون يحتوي الوصول.
+  // 2) غير هيج: أصغر زون يحتوي النقطتين وإله تسعيرة داخلية مفعّلة.
+  // 3) غير هيج: السعر العام.
   const pickupBest = (pickupZones || [])[0];
   const dropoffBest = (dropoffZones || [])[0];
   const sameSmallestZone =
@@ -249,6 +279,9 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
   const areaType = "mixed";
   const pricing = await findPricingSetting(normalizedService, areaType, transaction);
   const routePerKm = routePricePerKm(routePrice, normalizedService);
+  const intraMatch =
+    routePerKm == null ? findIntraZone(pickupZones, dropoffZones, normalizedService) : null;
+  const intraMinimum = intraMatch ? parseFloat(intraMatch.zone.intraMinimumFare) : NaN;
 
   const parsedDistance = Number(distanceKm);
   const parsedDuration = Number(durationMin);
@@ -266,18 +299,33 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
     const perMin = Number.isFinite(parseFloat(pricing?.pricePerMinute))
       ? parseFloat(pricing.pricePerMinute)
       : DEFAULT_PRICING.pricePerMinute;
-    const minimum = Number.isFinite(parseFloat(pricing?.minimumFare))
+    const generalMinimum = Number.isFinite(parseFloat(pricing?.minimumFare))
       ? parseFloat(pricing.minimumFare)
       : DEFAULT_PRICING.minimumFare;
+    // الرحلة الداخلية قصيرة: إلها حد أدنى خاص إذا الأدمن حدده
+    const minimum = Number.isFinite(intraMinimum) && intraMinimum > 0
+      ? Math.max(generalMinimum, intraMinimum)
+      : generalMinimum;
 
-    const beforeMin = base + dKm * (routePerKm ?? perKm) + (dur != null ? dur * perMin : 0);
-    estimatedFare = String(Math.round(Math.max(minimum, beforeMin) / 250) * 250);
+    const appliedPerKm = routePerKm ?? intraMatch?.perKm ?? perKm;
+    const beforeMin = base + dKm * appliedPerKm + (dur != null ? dur * perMin : 0);
+    // التقريب لأقرب 250، بس ما ينزل تحت الحد الأدنى (نقرّب الحد الأدنى للأعلى)
+    let rounded = Math.round(Math.max(minimum, beforeMin) / 250) * 250;
+    if (rounded < minimum) rounded = Math.ceil(minimum / 250) * 250;
+    estimatedFare = String(rounded);
   }
 
   return {
     areaType,
     pricing,
-    pricingZone: null,
+    pricingZone: intraMatch
+      ? {
+          id: intraMatch.zone.id,
+          name: intraMatch.zone.name,
+          pricePerKm: intraMatch.perKm,
+          minimumFare: Number.isFinite(intraMinimum) && intraMinimum > 0 ? intraMinimum : null,
+        }
+      : null,
     pricingRoute: routePrice && routePerKm != null
       ? {
           id: routePrice.id,
@@ -300,7 +348,9 @@ async function calculateFare({ pickup, dropoff, distanceKm, durationMin, service
       : null,
     pricingSource: routePerKm != null
       ? "zone_route"
-      : "general",
+      : intraMatch
+        ? "zone_internal"
+        : "general",
     matchedPickupZones: (pickupZones || []).map((zone) => ({ id: zone.id, name: zone.name })),
     matchedDropoffZones: (dropoffZones || []).map((zone) => ({ id: zone.id, name: zone.name })),
     estimatedFare,
